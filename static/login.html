@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MDS Dashboard – Sign in</title>
+  <link rel="icon" href="/static/logo.svg">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="login">
+    <form id="login" class="card card-b">
+      <img class="logo" src="/static/logo.svg" alt="">
+      <h1>MDS Dashboard</h1>
+      <div class="field">
+        <label for="username">Username</label>
+        <input id="username" autocomplete="username" required autofocus>
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" type="password" autocomplete="current-password" required>
+      </div>
+      <p id="error" class="warn small hidden"></p>
+      <button class="btn primary" style="width:100%">Sign in</button>
+    </form>
+  </main>
+  <script>
+    document.getElementById("login").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const err = document.getElementById("error");
+      err.classList.add("hidden");
+      const res = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: document.getElementById("username").value,
+          password: document.getElementById("password").value,
+        }),
+      });
+      if (res.ok) {
+        location.href = "/";
+      } else {
+        err.textContent = (await res.json().catch(() => ({}))).detail || "Sign in failed";
+        err.classList.remove("hidden");
+      }
+    });
+  </script>
+</body>
+</html>
