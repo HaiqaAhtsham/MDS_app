@@ -3,6 +3,7 @@
 import logging
 import re
 import shutil
+import sqlite3
 import threading
 import time
 import uuid
@@ -15,7 +16,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, config, db, detection, rag, tracking
+from . import auth, config, db, density, detection, mgrs, rag, routing, tracking
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("mds")
@@ -201,6 +202,35 @@ def set_route(body: RouteIn, user=User):
     return tracking.state()
 
 
+class PointIn(BaseModel):
+    which: str = Field(pattern="^(start|end)$")
+    lat: float
+    lng: float
+
+
+class ParamsIn(BaseModel):
+    mine_type: str = Field(pattern="^(at|mixed)$")
+    atm: float
+    apm: float | None = None
+    time_gap: int
+
+
+@app.post("/api/tracking/point")
+def set_point(body: PointIn, user=User):
+    _check((body.lat, body.lng))
+    tracking.set_point(body.which, body.lat, body.lng)
+    return tracking.state()
+
+
+@app.put("/api/tracking/params")
+def set_params(body: ParamsIn, user=User):
+    try:
+        tracking.set_params(body.mine_type, body.atm, body.apm, body.time_gap)
+    except density.SelectionError as e:
+        raise HTTPException(400, str(e))
+    return tracking.state()
+
+
 @app.post("/api/tracking/start")
 def start_mission(user=User):
     try:
@@ -219,6 +249,101 @@ def reset_mission(user=User):
 def post_position(body: PositionIn, user=User):
     _check((body.lat, body.lng))
     return tracking.record_position(body.lat, body.lng, body.accuracy, body.heading, body.speed, user["id"])
+
+
+# ------------------------------------------------------ density / grid / route
+
+
+@app.get("/api/density")
+def density_table(user=User):
+    return density.table()
+
+
+@app.post("/api/density/calc")
+def density_calc(body: ParamsIn, user=User):
+    try:
+        return density.calculate(body.mine_type, body.time_gap, body.atm, body.apm)
+    except density.SelectionError as e:
+        raise HTTPException(400, str(e))
+
+
+class GridIn(BaseModel):
+    text: str = Field(max_length=40)
+    gzd: str | None = None
+    square: str | None = None
+
+
+@app.post("/api/grid/parse")
+def grid_parse(body: GridIn, user=User):
+    try:
+        return mgrs.parse(body.text, body.gzd or db.get_setting("grid_gzd"), body.square or db.get_setting("grid_square"))
+    except mgrs.GridError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/route")
+def get_route(from_lat: float, from_lng: float, to_lat: float, to_lng: float, user=User):
+    _check((from_lat, from_lng))
+    _check((to_lat, to_lng))
+    return routing.route((from_lat, from_lng), (to_lat, to_lng))
+
+
+def _tile_source() -> str | None:
+    if config.MBTILES.exists():
+        return "mbtiles"
+    if config.TILE_DIR.exists() and any(p.is_dir() and p.name.isdigit() for p in config.TILE_DIR.iterdir()):
+        return "dir"
+    return None
+
+
+@app.get("/api/config")
+def client_config(user=User):
+    local = _tile_source()
+    max_zoom = 19
+    if local == "mbtiles":
+        conn = sqlite3.connect(f"file:{config.MBTILES}?mode=ro", uri=True)
+        try:
+            row = conn.execute("SELECT value FROM metadata WHERE name = 'maxzoom'").fetchone()
+            max_zoom = int(row[0]) if row else max_zoom
+        except (sqlite3.Error, ValueError):
+            pass
+        finally:
+            conn.close()
+    elif local == "dir":
+        max_zoom = max(int(p.name) for p in config.TILE_DIR.iterdir() if p.is_dir() and p.name.isdigit())
+    return {
+        "tile_max_zoom": max_zoom,
+        "tile_url": "/tiles/{z}/{x}/{y}" if local else (config.ONLINE_TILE_URL if config.ONLINE_TILES else None),
+        "tiles": local or ("online" if config.ONLINE_TILES else "none"),
+        "road_routing": bool(config.OSRM_URL),
+        "off_route_m": config.OFF_ROUTE_M,
+        "arrival_radius_m": config.ARRIVAL_RADIUS_M,
+    }
+
+
+@app.get("/tiles/{z}/{x}/{y}")
+def tile(z: int, x: int, y: int, user=User):
+    source = _tile_source()
+    if source == "mbtiles":
+        conn = sqlite3.connect(f"file:{config.MBTILES}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT tile_data FROM tiles WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?",
+                (z, x, (1 << z) - 1 - y),  # MBTiles rows are TMS (flipped)
+            ).fetchone()
+            fmt = conn.execute("SELECT value FROM metadata WHERE name = 'format'").fetchone()
+        finally:
+            conn.close()
+        if not row:
+            raise HTTPException(404)
+        kind = "jpeg" if fmt and fmt[0] in ("jpg", "jpeg") else "png"
+        return Response(row[0], media_type=f"image/{kind}", headers={"Cache-Control": "max-age=86400"})
+    if source == "dir":
+        for ext in ("jpg", "jpeg", "png", "webp"):
+            path = config.TILE_DIR / str(z) / str(x) / f"{y}.{ext}"
+            if path.exists():
+                return FileResponse(path, headers={"Cache-Control": "max-age=86400"})
+    raise HTTPException(404)
 
 
 # --------------------------------------------------------------- markers
@@ -299,6 +424,9 @@ def _settings():
         "total_canisters": int(db.get_setting("total_canisters")),
         "fired_canisters": int(db.get_setting("fired_canisters")),
         "rag_mode": config.RAG_MODE,
+        "speed_tol_pct": float(db.get_setting("speed_tol_pct", "10")),
+        "grid_gzd": db.get_setting("grid_gzd", ""),
+        "grid_square": db.get_setting("grid_square", ""),
     }
 
 
@@ -315,6 +443,32 @@ def set_sd(body: SdIn, user=User):
         with db.tx() as c:
             c.execute("UPDATE markers SET expires_at = created_at + ?", (body.hours * 3600,))
         purge_expired()
+    return _settings()
+
+
+class GridDefaultsIn(BaseModel):
+    gzd: str
+    square: str
+
+
+class ToleranceIn(BaseModel):
+    pct: float = Field(gt=0, le=100)
+
+
+@app.put("/api/settings/grid")
+def set_grid_defaults(body: GridDefaultsIn, user=User):
+    try:
+        mgrs.from_mgrs(body.gzd, body.square, "00")  # validates zone, band and square
+    except mgrs.GridError as e:
+        raise HTTPException(400, str(e))
+    db.set_setting("grid_gzd", body.gzd.strip().upper().replace(" ", ""))
+    db.set_setting("grid_square", body.square.strip().upper().replace(" ", ""))
+    return _settings()
+
+
+@app.put("/api/settings/speed-tolerance")
+def set_speed_tolerance(body: ToleranceIn, admin=Admin):
+    db.set_setting("speed_tol_pct", body.pct)
     return _settings()
 
 

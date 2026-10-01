@@ -32,6 +32,17 @@ COOKIE_SECURE = os.environ.get("MDS_COOKIE_SECURE", "0") == "1"
 RAG_MODE = os.environ.get("MDS_RAG_MODE", "local").lower()
 CLAUDE_MODEL = os.environ.get("MDS_CLAUDE_MODEL", "claude-opus-5-5")
 
+# Road routing: a self-hosted OSRM server, e.g. http://localhost:5000.
+OSRM_URL = os.environ.get("MDS_OSRM_URL", "")
+OSRM_PROFILE = os.environ.get("MDS_OSRM_PROFILE", "driving")
+
+# Offline map tiles: an .mbtiles file, or a folder of {z}/{x}/{y}.png|jpg.
+# When neither exists, the browser loads online imagery (if MDS_ONLINE_TILES=1).
+MBTILES = Path(os.environ.get("MDS_MBTILES", ROOT / "tiles" / "map.mbtiles"))
+TILE_DIR = Path(os.environ.get("MDS_TILE_DIR", ROOT / "tiles"))
+ONLINE_TILES = os.environ.get("MDS_ONLINE_TILES", "1") == "1"
+ONLINE_TILE_URL = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+
 # Tracking thresholds, in metres.
 ARRIVAL_RADIUS_M = float(os.environ.get("MDS_ARRIVAL_RADIUS_M", "25"))
 OFF_ROUTE_M = float(os.environ.get("MDS_OFF_ROUTE_M", "50"))

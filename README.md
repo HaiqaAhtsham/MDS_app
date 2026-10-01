@@ -2,7 +2,7 @@
 
 Web dashboard for the GBL-131 Mine Dispensing System (MDS). It has four parts:
 
-1. **Vehicle tracking.** You mark a start and an end point on a satellite map. The vehicle drives from wherever it is (point A) to the start point, then along the strip to the end point. The **Minefield Progress** ring shows how much of the start→end path the vehicle has covered. Position comes from the GPS of the device the app is opened on.
+1. **Laying missions and navigation.** You enter a start point and an end point as an MGRS grid reference or as latitude/longitude. You pick the mine type, density and time interval from the density-frontage chart; the app looks up the frontage and the required speed. **Start** then gives turn-by-turn directions from the vehicle to the start point, and along the strip it warns when the speed is outside tolerance. Position comes from the GPS of the device the app is opened on, and the app works offline.
 2. **Drone video detection.** You upload a drone video together with its `.srt` telemetry file. The app finds the object from your reference pictures in the video frames, works out each object's GPS position, and marks it on the map. The **self-destruct time** selector (1–272 h, the MLCU range) controls when marks are removed automatically.
 3. **RAG chatbot.** Answers questions about MDS from `MDS.pdf` and any other PDFs you add. Every answer cites page numbers.
 4. **Accounts.** There is one admin account. The admin can add, disable, reset and delete operator accounts.
@@ -16,6 +16,32 @@ MDS_ADMIN_PASSWORD='choose-a-strong-one' uvicorn app.main:app --host 0.0.0.0 --p
 ```
 
 Open http://localhost:8000 and sign in as `admin`. If you don't set `MDS_ADMIN_PASSWORD`, the first start generates a password and prints it in the server log. You can change it later under **Settings**.
+
+### Running fully offline
+
+The app needs no internet once two things are installed: map tiles for your area and a road-routing server.
+
+**1. Map tiles.** Put an MBTiles file at `tiles/map.mbtiles`, or a folder of `tiles/{z}/{x}/{y}.jpg|png`. You can make one with QGIS (*Processing → Generate XYZ tiles (MBTiles)*) from your satellite imagery or maps. The app serves the file itself. While no tiles are installed, the browser falls back to online Esri imagery; set `MDS_ONLINE_TILES=0` to switch that off.
+
+**2. Road routing (OSRM).** Prepare the road data once, while you have internet:
+
+```bash
+wget https://download.geofabrik.de/asia/pakistan-latest.osm.pbf
+docker run -t -v "$PWD:/data" ghcr.io/project-osrm/osrm-backend osrm-extract -p /opt/car.lua /data/pakistan-latest.osm.pbf
+docker run -t -v "$PWD:/data" ghcr.io/project-osrm/osrm-backend osrm-partition /data/pakistan-latest.osrm
+docker run -t -v "$PWD:/data" ghcr.io/project-osrm/osrm-backend osrm-customize /data/pakistan-latest.osrm
+```
+
+Then run the server (no internet needed) and point the app at it:
+
+```bash
+docker run -d -p 5000:5000 -v "$PWD:/data" ghcr.io/project-osrm/osrm-backend osrm-routed --algorithm mld /data/pakistan-latest.osrm
+MDS_OSRM_URL=http://localhost:5000 uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+Without `MDS_OSRM_URL`, or if the server is down, navigation shows a straight line with a compass heading and a clear "no road routing" warning.
+
+OSRM snaps the start point to the nearest road. When the start point is in a field, the directions end with *"Leave the road: head east (90°) for 120 m"*.
 
 ### GPS needs HTTPS
 
@@ -31,17 +57,44 @@ Another way is a reverse proxy with a real certificate (nginx, Caddy).
 
 ## Using it
 
-### Tracking
+### Laying mission: start point → parameters → end point → Start
 
-1. Click **Set start**, then click the map. It switches to the end point, so click again for the end.
-2. On the device in the vehicle, sign in and press **Use this device's GPS**. It sends a fix every 2 s.
-3. Press **Start mission**. The vehicle's current position becomes point A.
-   - During the approach phase, the panel shows the distance to the start point, and a dashed white line runs from the vehicle to the start.
-   - Once the vehicle is within 25 m of the start, the laying phase begins. Progress is the vehicle's position projected onto the start→end line. The ring never goes backwards on GPS jitter, and the panel warns if the vehicle drifts more than 50 m off the centreline.
-   - Within 25 m of the end point, the mission is marked complete.
-4. Everyone else signed in sees the vehicle move, because the dashboard refreshes every 3 s.
+1. **Start point.** You can type the point in either of two ways:
+   - **Grid reference:** an MGRS reference on WGS84. A six-figure GR such as `123456` only works together with the grid zone (e.g. `43S`) and 100 km square (e.g. `CT`). Enter those once and tick *Save as default*, or set them under **Settings**. A full reference such as `43S CT 123456` also works, as do 8- and 10-figure references. A six-figure GR is accurate to 100 m: it refers to the south-west corner of its 100 m square.
+   - **Latitude / longitude:** decimal degrees.
 
-**Simulate** drives a pretend vehicle along the route, so you can try this without going outside.
+   Bad input is rejected with a message. **Pick on map** lets you click the point instead.
+2. **Mine parameters.** This dialog opens by itself after the start point is set.
+   - *Anti-tank only:* choose one of the chart's AT densities.
+   - *Mixed:* choose an ATM density. The chart pairs every ATM density with exactly one APM density, so the APM box shows that pair.
+   - Time interval: 1, 2 or 5 s, the only rows in the chart.
+
+   The dialog shows the **frontage** and the **required vehicle speed** from the chart, the chart rows they came from, and a hand check (see below).
+3. **End point.** Uses the same dialog as the start point.
+4. **Start.** Opens the navigation panel:
+   - the road route from the vehicle to the start point, then the strip to the end point;
+   - turn-by-turn directions, distance to the next turn, distance remaining and ETA to the start point;
+   - a new route is calculated if the vehicle is more than 50 m off the route for two fixes in a row;
+   - during laying, current speed against the required speed. It warns when the speed is outside the tolerance. The tolerance is ±10% by default; the admin can change it under **Settings**.
+
+Progress on the strip works as before. The **Minefield Progress** ring shows how much of the start→end line has been covered, and other signed-in users see the vehicle move. **Simulate** drives a pretend vehicle along the route and lays at the required speed.
+
+#### Density-frontage chart
+
+`app/density.py` holds Annexure A (p. 120) exactly as printed. Nothing is interpolated, and selections that are not in the chart are rejected. Speeds are treated as km/h. The chart itself gives no unit, but the relationship below only holds in km/h.
+
+Every result shows two **hand checks**. They are relationships that hold across the chart; the result itself is always the chart's printed value.
+
+- `vehicle speed = space interval ÷ time gap × 3.6`
+- `frontage = space interval × 288 canisters`
+
+The app flags these chart values (they are still the values used):
+
+| Chart cell | Printed | Check gives |
+| --- | --- | --- |
+| AT 0.5 / mixed 0.4–0.3, 5 s | 6.1 km/h | 7.2 km/h |
+| AT 0.6 / mixed 0.48–0.36, 5 s | 5.6 km/h | 5.98 km/h |
+| AT 0.2 / mixed 0.16–0.12, 1 s | 90 km/h | above the vehicle's 81 km/hr maximum (p. 7) |
 
 ### Drone detection
 
@@ -90,13 +143,19 @@ For `claude` mode, set `ANTHROPIC_API_KEY`. `MDS_CLAUDE_MODEL` defaults to `clau
 | `MDS_RAG_MODE` | `local` | `local` or `claude` |
 | `MDS_SESSION_HOURS` | `12` | Sign-in lifetime |
 | `MDS_COOKIE_SECURE` | `0` | Set to `1` when serving over HTTPS |
-| `MDS_ARRIVAL_RADIUS_M` / `MDS_OFF_ROUTE_M` | `25` / `50` | Tracking thresholds |
+| `MDS_ARRIVAL_RADIUS_M` / `MDS_OFF_ROUTE_M` | `25` / `50` | Arrival radius; off-route distance that triggers rerouting |
+| `MDS_OSRM_URL` / `MDS_OSRM_PROFILE` | unset / `driving` | Self-hosted OSRM server for road routing |
+| `MDS_MBTILES` / `MDS_TILE_DIR` | `tiles/map.mbtiles` / `tiles/` | Offline map tiles |
+| `MDS_ONLINE_TILES` | `1` | `0` = never load online imagery |
 
 ## Layout
 
 ```
 app/main.py        HTTP API + static files
 app/tracking.py    mission state machine and progress
+app/density.py     density-frontage chart (Annexure A) and lookups
+app/mgrs.py        MGRS / UTM grid references (WGS84)
+app/routing.py     OSRM client, turn-by-turn text, straight-line fallback
 app/geo.py         distance / projection helpers
 app/srt.py         DJI .srt telemetry parser
 app/detection.py   detector, pixel→GPS, clustering, background jobs
@@ -111,5 +170,4 @@ Run the tests with `python -m pytest -q`.
 
 ## Notes
 
-- The satellite tiles come from Esri World Imagery and need internet access. On an offline network, point the tile URL in `static/app.js` to a local tile server.
 - `MDS.pdf` is marked **RESTRICTED**. Keep this repository private, and read the `claude` mode row above before enabling it.

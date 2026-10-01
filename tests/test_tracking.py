@@ -15,7 +15,14 @@ def test_projection_halfway():
 def test_mission_flow(client):
     assert client.post("/api/tracking/start").status_code == 400  # no route yet
 
-    client.post("/api/tracking/route", json={"start": START, "end": END})
+    client.post("/api/tracking/point", json={"which": "start", "lat": START[0], "lng": START[1]})
+    s = client.post("/api/tracking/point", json={"which": "end", "lat": END[0], "lng": END[1]}).json()
+    assert s["status"] == "planned"
+    r = client.post("/api/tracking/start")
+    assert r.status_code == 400 and "parameters" in r.json()["detail"]  # no mine parameters yet
+    s = client.put("/api/tracking/params", json={"mine_type": "at", "atm": 0.5, "time_gap": 2}).json()
+    assert s["params"]["frontage_m"] == 2880 and s["params"]["required_speed_kmh"] == 18
+    assert s["grid"]["start"] and s["grid"]["start"].startswith("43")
     a = from_local(*START, -300, -400)  # point A, 500 m from start
     client.post("/api/tracking/position", json={"lat": a[0], "lng": a[1]})
     s = client.post("/api/tracking/start").json()

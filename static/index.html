@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MDS Dashboard</title>
   <link rel="icon" href="/static/logo.svg">
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
   <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
@@ -44,12 +43,22 @@
     <div class="content">
       <!-- Dashboard -->
       <section class="view dashboard" id="view-dashboard">
+        <aside class="nav-panel card hidden" id="nav-panel">
+          <div class="card-h">Navigation <span class="pill" id="nav-phase"></span><button class="icon-btn" id="nav-close" title="Close">✕</button></div>
+          <div class="card-b">
+            <div id="nav-current" class="nav-current"></div>
+            <div id="nav-speed" class="nav-speed hidden"></div>
+            <div id="nav-stats"></div>
+            <div class="label" style="margin-top:12px">Directions</div>
+            <ol id="nav-steps" class="nav-steps"></ol>
+          </div>
+        </aside>
         <div class="map-wrap">
           <div id="map"></div>
           <div class="map-top">
             <form class="search" id="search">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-              <input id="search-q" placeholder="Search place or lat, lng">
+              <input id="search-q" placeholder="Grid ref (43S CT 123456) or lat, lng">
             </form>
             <div class="spacer"></div>
             <select id="route-filter" title="Route layers">
@@ -61,9 +70,10 @@
           </div>
           <div id="map-hint" class="map-hint hidden"></div>
           <div class="mission-bar">
-            <button class="btn" id="btn-set-start">Set start</button>
-            <button class="btn" id="btn-set-end">Set end</button>
-            <button class="btn primary" id="btn-start">Start mission</button>
+            <button class="btn" id="btn-set-start">Start point</button>
+            <button class="btn" id="btn-params">Mine parameters</button>
+            <button class="btn" id="btn-set-end">End point</button>
+            <button class="btn primary" id="btn-start">Start</button>
             <button class="btn" id="btn-gps">Use this device's GPS</button>
             <button class="btn" id="btn-sim" title="Drive a simulated vehicle along the route">Simulate</button>
             <button class="btn" id="btn-mark" title="Click the map to add a marker by hand">Add marker</button>
@@ -208,6 +218,23 @@
       <section class="view hidden" id="view-settings">
         <div class="page">
           <h2>Settings</h2>
+          <div class="grid-2">
+          <form class="card card-b" id="grid-form">
+            <div class="label" style="margin-bottom:8px">Grid reference defaults (MGRS, WGS84)</div>
+            <p class="small muted">A six-figure GR is only unique inside one 100 km square. These are used when a GR is entered without them.</p>
+            <div class="row">
+              <div class="field"><label>Grid zone</label><input name="gzd" placeholder="43S" required></div>
+              <div class="field"><label>100 km square</label><input name="square" placeholder="CT" required></div>
+            </div>
+            <button class="btn primary">Save</button>
+          </form>
+          <form class="card card-b admin-only hidden" id="tol-form">
+            <div class="label" style="margin-bottom:8px">Laying speed tolerance</div>
+            <p class="small muted">Warn the driver when the speed differs from the chart speed by more than this.</p>
+            <div class="field"><label>Tolerance (± %)</label><input name="pct" type="number" min="1" max="100" step="0.5" required></div>
+            <button class="btn primary">Save</button>
+          </form>
+          </div>
           <form class="card card-b" id="pw-form" style="max-width:420px">
             <div class="field"><label>Current password</label><input name="current" type="password" required autocomplete="current-password"></div>
             <div class="field"><label>New password (min 8)</label><input name="new" type="password" required minlength="8" autocomplete="new-password"></div>
@@ -218,6 +245,58 @@
     </div>
   </div>
 </div>
+
+<dialog id="point-dialog" class="dlg">
+  <form id="pt-form" method="dialog">
+    <h3 id="pt-title">Start point</h3>
+    <div class="tabs">
+      <button type="button" class="btn sm" data-tab="gr">Grid reference</button>
+      <button type="button" class="btn sm" data-tab="ll">Latitude / longitude</button>
+    </div>
+    <div id="pt-gr">
+      <div class="row">
+        <div class="field"><label>Grid zone</label><input id="pt-gzd" placeholder="43S" maxlength="3"></div>
+        <div class="field"><label>100 km square</label><input id="pt-square" placeholder="CT" maxlength="2"></div>
+      </div>
+      <div class="field"><label>Grid reference (six-figure, or 8/10-figure)</label><input id="pt-gr-input" placeholder="123456" autocomplete="off"></div>
+      <label class="check"><input type="checkbox" id="pt-save-default"> Save zone and square as default</label>
+    </div>
+    <div id="pt-ll" class="hidden">
+      <div class="row">
+        <div class="field"><label>Latitude (decimal °)</label><input id="pt-lat" placeholder="33.684422" inputmode="decimal"></div>
+        <div class="field"><label>Longitude (decimal °)</label><input id="pt-lng" placeholder="73.047882" inputmode="decimal"></div>
+      </div>
+    </div>
+    <p id="pt-error" class="warn small hidden"></p>
+    <div class="dlg-actions">
+      <button type="button" class="btn" id="pt-pick">Pick on map</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn" id="pt-cancel">Cancel</button>
+      <button class="btn primary" value="ok">Set point</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="params-dialog" class="dlg">
+  <form id="pm-form" method="dialog">
+    <h3>Mine type and parameters</h3>
+    <div class="row">
+      <label class="check"><input type="radio" name="pm-type" id="pm-type-at" value="at" checked> Anti-tank (ATM) only</label>
+      <label class="check"><input type="radio" name="pm-type" id="pm-type-mixed" value="mixed"> Mixed (ATM + APM)</label>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <div class="field"><label id="pm-atm-label">Anti-tank (ATM) density</label><select id="pm-atm"></select></div>
+      <div class="field hidden" id="pm-apm-field"><label>APM density (paired in chart)</label><select id="pm-apm"></select></div>
+      <div class="field"><label>Time interval</label><select id="pm-gap"></select></div>
+    </div>
+    <div id="pm-result" class="pm-result"></div>
+    <div class="dlg-actions">
+      <span class="spacer"></span>
+      <button type="button" class="btn" id="pm-cancel">Cancel</button>
+      <button class="btn primary">Save parameters</button>
+    </div>
+  </form>
+</dialog>
 
 <div class="chat" id="chat">
   <div class="chat-h">

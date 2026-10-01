@@ -64,8 +64,7 @@ const state = {
   serverOffset: 0, // server clock minus local clock, seconds
   settings: null,
   pick: null, // "start" | "end" | "marker"
-  pendingStart: null,
-  pendingEnd: null,
+  config: null,
   gpsWatch: null,
   sim: null,
   chatHistory: [],
@@ -93,13 +92,19 @@ $("#logout").addEventListener("click", async () => {
 
 const map = L.map("map", { zoomControl: false, attributionControl: true }).setView([30.3753, 69.3451], 6);
 L.control.zoom({ position: "topright" }).addTo(map);
-L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
-  maxZoom: 20, maxNativeZoom: 19, attribution: "Imagery © Esri",
-}).addTo(map);
-L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}", {
-  maxZoom: 20, maxNativeZoom: 19, opacity: 0.8,
-}).addTo(map);
 $(".leaflet-top.leaflet-right").style.marginTop = "56px";
+
+function setTiles(cfg) {
+  if (!cfg.tile_url) {
+    toast("No map tiles are installed. Put an .mbtiles file in tiles/ (see README).", true);
+    return;
+  }
+  L.tileLayer(cfg.tile_url, {
+    maxZoom: Math.max(20, cfg.tile_max_zoom),
+    maxNativeZoom: cfg.tile_max_zoom,
+    attribution: cfg.tiles === "online" ? "Imagery © Esri" : "Offline tiles",
+  }).addTo(map);
+}
 
 const layers = {
   approach: L.layerGroup().addTo(map),
@@ -122,79 +127,213 @@ $("#route-filter").addEventListener("change", (e) => {
   }
 });
 
+// Search box: "lat, lng" or an MGRS grid reference (works offline).
 $("#search").addEventListener("submit", async (e) => {
   e.preventDefault();
   const q = $("#search-q").value.trim();
   if (!q) return;
-  const m = q.match(/^\s*(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)\s*$/);
+  const m = q.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
   if (m) { map.setView([+m[1], +m[2]], 17); return; }
   try {
-    const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`);
-    const [hit] = await res.json();
-    if (!hit) return toast("Place not found", true);
-    map.setView([+hit.lat, +hit.lon], 15);
-  } catch {
-    toast("Place search is unavailable; enter coordinates as lat, lng", true);
+    const r = await api("/api/grid/parse", { method: "POST", json: { text: q } });
+    map.setView([r.lat, r.lng], 17);
+  } catch (err) {
+    toast(`Enter "lat, lng" or a grid reference. ${err.message}`, true);
   }
 });
 
-// ------------------------------------------------------------ mission
+// ------------------------------------------------------------ mission: points
 
 function setPick(mode) {
   state.pick = state.pick === mode ? null : mode;
-  $("#btn-set-start").classList.toggle("on", state.pick === "start");
-  $("#btn-set-end").classList.toggle("on", state.pick === "end");
   $("#btn-mark").classList.toggle("on", state.pick === "marker");
   const hint = { start: "Click the map to place the START point", end: "Click the map to place the END point", marker: "Click the map to mark an object" }[state.pick];
   $("#map-hint").textContent = hint || "";
   $("#map-hint").classList.toggle("hidden", !hint);
   map.getContainer().style.cursor = state.pick ? "crosshair" : "";
 }
-$("#btn-set-start").addEventListener("click", () => setPick("start"));
-$("#btn-set-end").addEventListener("click", () => setPick("end"));
 $("#btn-mark").addEventListener("click", () => setPick("marker"));
+$("#btn-set-start").addEventListener("click", () => openPointDialog("start"));
+$("#btn-set-end").addEventListener("click", () => openPointDialog("end"));
+$("#btn-params").addEventListener("click", () => openParamsDialog());
 
 map.on("click", async (e) => {
-  const p = [e.latlng.lat, e.latlng.lng];
   if (!state.pick) return;
   const mode = state.pick;
   setPick(null);
+  const p = [e.latlng.lat, e.latlng.lng];
   if (mode === "marker") {
     await api("/api/markers", { method: "POST", json: { lat: p[0], lng: p[1], label: "object" } }).catch((err) => toast(err.message, true));
     return loadMarkers();
   }
-  const t = state.tracking || {};
-  state.pendingStart = mode === "start" ? p : state.pendingStart || t.start;
-  state.pendingEnd = mode === "end" ? p : state.pendingEnd || t.end;
-  if (state.pendingStart && state.pendingEnd) {
-    try {
-      renderTracking(await api("/api/tracking/route", { method: "POST", json: { start: state.pendingStart, end: state.pendingEnd } }));
-      state.pendingStart = state.pendingEnd = null;
-      toast("Route saved. Press Start mission when the vehicle is ready.");
-    } catch (err) { toast(err.message, true); }
-  } else {
-    drawPending();
-    setPick(mode === "start" ? "end" : "start");
-  }
+  await savePoint(mode, p[0], p[1]);
 });
 
-function drawPending() {
-  layers.strip.clearLayers();
-  if (state.pendingStart) L.marker(state.pendingStart, { icon: startIcon }).addTo(layers.strip);
-  if (state.pendingEnd) L.marker(state.pendingEnd, { icon: endIcon }).addTo(layers.strip);
+async function savePoint(which, lat, lng) {
+  try {
+    renderTracking(await api("/api/tracking/point", { method: "POST", json: { which, lat, lng } }));
+    resetNavRoute();
+    map.panTo([lat, lng]);
+    if (which === "start" && !state.tracking.params) openParamsDialog();
+    else if (which === "start" && !state.tracking.end) toast("Start point set. Now set the end point.");
+    return true;
+  } catch (err) {
+    toast(err.message, true);
+    return false;
+  }
 }
 
-$("#btn-start").addEventListener("click", async () => {
+const pointDlg = $("#point-dialog");
+let pointWhich = "start";
+
+function setPointTab(tab) {
+  $$("#point-dialog [data-tab]").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
+  $("#pt-gr").classList.toggle("hidden", tab !== "gr");
+  $("#pt-ll").classList.toggle("hidden", tab !== "ll");
+  pointDlg.dataset.tab = tab;
+}
+$$("#point-dialog [data-tab]").forEach((b) => b.addEventListener("click", () => setPointTab(b.dataset.tab)));
+
+function openPointDialog(which) {
+  pointWhich = which;
+  $("#pt-title").textContent = which === "start" ? "Start point" : "End point";
+  $("#pt-error").classList.add("hidden");
+  const s = state.settings;
+  $("#pt-gzd").value = s.grid_gzd || "";
+  $("#pt-square").value = s.grid_square || "";
+  $("#pt-save-default").checked = !s.grid_gzd;
+  const cur = state.tracking?.[which];
+  $("#pt-gr-input").value = "";
+  $("#pt-lat").value = cur ? cur[0].toFixed(6) : "";
+  $("#pt-lng").value = cur ? cur[1].toFixed(6) : "";
+  setPointTab(pointDlg.dataset.tab || "gr");
+  pointDlg.showModal();
+}
+
+function pointError(msg) {
+  $("#pt-error").textContent = msg;
+  $("#pt-error").classList.remove("hidden");
+}
+
+$("#pt-cancel").addEventListener("click", () => pointDlg.close());
+$("#pt-pick").addEventListener("click", () => { pointDlg.close(); setPick(pointWhich); });
+
+$("#pt-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  let lat, lng;
+  if (pointDlg.dataset.tab === "gr") {
+    const gzd = $("#pt-gzd").value.trim(), square = $("#pt-square").value.trim(), text = $("#pt-gr-input").value.trim();
+    if (!text) return pointError("Enter a grid reference, e.g. 123456");
+    try {
+      const r = await api("/api/grid/parse", { method: "POST", json: { text, gzd, square } });
+      ({ lat, lng } = r);
+      if ($("#pt-save-default").checked && gzd && square) {
+        renderSettings(await api("/api/settings/grid", { method: "PUT", json: { gzd, square } }));
+      }
+    } catch (err) { return pointError(err.message); }
+  } else {
+    const latS = $("#pt-lat").value.trim(), lngS = $("#pt-lng").value.trim();
+    const num = /^-?\d+(\.\d+)?$/;
+    if (!num.test(latS) || !num.test(lngS)) return pointError("Latitude and longitude must be decimal degrees, e.g. 33.684422 and 73.047882");
+    lat = +latS; lng = +lngS;
+    if (lat < -90 || lat > 90) return pointError("Latitude must be between -90 and 90");
+    if (lng < -180 || lng > 180) return pointError("Longitude must be between -180 and 180");
+  }
+  pointDlg.close();
+  await savePoint(pointWhich, lat, lng);
+});
+
+// ------------------------------------------------------------ mission: mine parameters
+
+const paramsDlg = $("#params-dialog");
+let densityTable = null;
+
+async function openParamsDialog() {
+  densityTable = densityTable || await api("/api/density");
+  const p = state.tracking?.params;
+  $("#pm-type-" + (p?.mine_type || "at")).checked = true;
+  $("#pm-gap").innerHTML = densityTable.time_gaps.map((g) => `<option value="${g}">${g} s</option>`).join("");
+  if (p) $("#pm-gap").value = String(p.time_gap_s);
+  fillDensityOptions(p);
+  paramsDlg.showModal();
+  calcParams();
+}
+
+function fillDensityOptions(p) {
+  const mixed = $("#pm-type-mixed").checked;
+  const atm = mixed ? densityTable.mixed.map((x) => x.atm) : densityTable.anti_tank;
+  $("#pm-atm-label").textContent = mixed ? "ATM density" : "Anti-tank (ATM) density";
+  $("#pm-atm").innerHTML = atm.map((v) => `<option value="${v}">${v}</option>`).join("");
+  if (p && p.mine_type === (mixed ? "mixed" : "at")) $("#pm-atm").value = String(p.atm);
+  $("#pm-apm-field").classList.toggle("hidden", !mixed);
+  fillApm();
+}
+
+// The chart pairs each ATM density with exactly one APM density.
+function fillApm() {
+  const pair = densityTable.mixed.find((x) => String(x.atm) === $("#pm-atm").value);
+  $("#pm-apm").innerHTML = pair ? `<option value="${pair.apm}">${pair.apm}</option>` : "";
+}
+
+$$('input[name="pm-type"]').forEach((r) => r.addEventListener("change", () => { fillDensityOptions(null); calcParams(); }));
+$("#pm-atm").addEventListener("change", () => { fillApm(); calcParams(); });
+$("#pm-gap").addEventListener("change", calcParams);
+$("#pm-cancel").addEventListener("click", () => paramsDlg.close());
+
+function paramsBody() {
+  const mixed = $("#pm-type-mixed").checked;
+  return {
+    mine_type: mixed ? "mixed" : "at",
+    atm: +$("#pm-atm").value,
+    apm: mixed ? +$("#pm-apm").value : null,
+    time_gap: +$("#pm-gap").value,
+  };
+}
+
+async function calcParams() {
+  const out = $("#pm-result");
   try {
-    renderTracking(await api("/api/tracking/start", { method: "POST" }));
-    if (!state.tracking.vehicle) toast("Mission started. Waiting for the vehicle's GPS…");
-  } catch (err) { toast(err.message, true); }
+    const r = await api("/api/density/calc", { method: "POST", json: paramsBody() });
+    out.innerHTML = paramsHtml(r, true);
+  } catch (err) {
+    out.innerHTML = `<p class="warn">${esc(err.message)}</p>`;
+  }
+}
+
+function paramsHtml(r, full) {
+  const t = state.tracking;
+  const strip = t?.strip_length_m != null
+    ? `<div class="kv"><span>Planned strip (start → end)</span><span>${fmtM(t.strip_length_m)}</span></div>` : "";
+  const head = `
+    <div class="kv"><span>Frontage covered</span><b>${r.frontage_m} m</b></div>
+    <div class="kv"><span>Required vehicle speed</span><b>${r.required_speed_kmh} km/h</b></div>
+    <div class="kv"><span>Space interval b/w canisters</span><span>${r.interval_m} m</span></div>
+    ${strip}`;
+  if (!full) return head;
+  const checks = r.checks.map((c) => `<li class="${c.ok ? "" : "warn"}">${c.ok ? "✓" : "⚠"} ${esc(c.name)}: ${esc(c.formula)} = ${c.computed}; chart: ${c.table}</li>`).join("");
+  const flags = r.flags.map((f) => `<li class="warn">⚠ ${esc(f)}</li>`).join("");
+  return `${head}
+    <div class="label" style="margin-top:10px">Taken from the chart</div>
+    <ul class="small src-list">${r.rows_used.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>
+    <div class="label">Hand check (relationship that holds across the chart)</div>
+    <ul class="small src-list">${checks}</ul>
+    ${flags ? `<ul class="small src-list">${flags}</ul>` : ""}
+    <p class="small muted">${esc(r.source)}. Speeds in km/h.</p>`;
+}
+
+$("#pm-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    renderTracking(await api("/api/tracking/params", { method: "PUT", json: paramsBody() }));
+    paramsDlg.close();
+    if (!state.tracking.end) toast("Parameters saved. Now set the end point.");
+  } catch (err) { $("#pm-result").innerHTML = `<p class="warn">${esc(err.message)}</p>`; }
 });
 
 $("#btn-reset").addEventListener("click", async () => {
-  if (!confirm("Clear the route, mission progress and vehicle track?")) return;
+  if (!confirm("Clear the start and end points, parameters, progress and vehicle track?")) return;
   stopSim();
-  state.pendingStart = state.pendingEnd = null;
+  closeNav();
   renderTracking(await api("/api/tracking/reset", { method: "POST" }));
 });
 
@@ -247,42 +386,50 @@ function updateGpsUi() {
   pill.classList.toggle("live", on || sim);
 }
 
-// Simulation: drives from the current vehicle position (or a point 400 m
-// before the start) to the start, then along the strip, posting fixes.
-$("#btn-sim").addEventListener("click", () => {
+// Simulation: follows the navigation route to the start point (or a straight
+// line from 400 m away), then lays along the strip at the required speed.
+const SIM_TICK_S = 0.7;
+const SIM_APPROACH_MS = 15; // simulated approach speed, m/s (demo only)
+
+$("#btn-sim").addEventListener("click", async () => {
   if (state.sim) return stopSim();
   const t = state.tracking;
-  if (!t?.start || !t?.end) return toast("Mark a start and end point first", true);
+  if (!t?.start || !t?.end) return toast("Set a start and end point first", true);
+  if (!t.params) return toast("Choose the mine parameters first", true);
   if (state.gpsWatch !== null) $("#btn-gps").click();
-  let from = t.vehicle ? [t.vehicle.lat, t.vehicle.lng] : null;
-  if (!from) {
+  if (!t.vehicle) {
     const dLat = t.start[0] - t.end[0], dLng = t.start[1] - t.end[1];
     const k = 400 / Math.max(1, haversine(t.start, t.end));
-    from = [t.start[0] + dLat * k + 0.002, t.start[1] + dLng * k];
+    await sendPosition(t.start[0] + dLat * k + 0.002, t.start[1] + dLng * k, { accuracy: 5 });
   }
-  const legs = [[from, t.start], [t.start, t.end]];
-  const stepM = 25;
-  const pts = [];
-  for (const [a, b] of legs) {
-    const n = Math.max(1, Math.ceil(haversine(a, b) / stepM));
-    for (let i = 0; i <= n; i++) {
-      const jitter = () => (Math.random() - 0.5) * 0.00004;
-      pts.push([a[0] + ((b[0] - a[0]) * i) / n + jitter(), a[1] + ((b[1] - a[1]) * i) / n + jitter()]);
-    }
-  }
+  if (!["approach", "laying"].includes(state.tracking.status)) await startMission();
+  const from = [state.tracking.vehicle.lat, state.tracking.vehicle.lng];
+  const approachPath = nav.route ? nav.route.geometry : [from, t.start];
+  const pts = [
+    ...resample(approachPath, SIM_APPROACH_MS * SIM_TICK_S).map((p) => [p, SIM_APPROACH_MS]),
+    ...resample([t.start, t.end], (t.params.required_speed_kmh / 3.6) * SIM_TICK_S).map((p) => [p, t.params.required_speed_kmh / 3.6]),
+  ];
   let i = 0;
   const go = async () => {
     if (!state.sim) return;
     if (i >= pts.length) return stopSim();
-    const [lat, lng] = pts[i++];
-    await sendPosition(lat, lng, { accuracy: 5, speed: stepM });
-    state.sim = setTimeout(go, 700);
+    const [[lat, lng], speed] = pts[i++];
+    await sendPosition(lat, lng, { accuracy: 5, speed });
+    state.sim = setTimeout(go, SIM_TICK_S * 1000);
   };
   state.sim = setTimeout(go, 0);
-  const begin = t.status === "planned" || t.status === "idle" || t.status === "complete";
-  if (begin) api("/api/tracking/start", { method: "POST" }).then(renderTracking).catch(() => {});
   updateGpsUi();
 });
+
+function resample(path, stepM) {
+  const out = [];
+  for (let k = 0; k + 1 < path.length; k++) {
+    const a = path[k], b = path[k + 1];
+    const n = Math.max(1, Math.ceil(haversine(a, b) / stepM));
+    for (let i = k === 0 ? 0 : 1; i <= n; i++) out.push([a[0] + ((b[0] - a[0]) * i) / n, a[1] + ((b[1] - a[1]) * i) / n]);
+  }
+  return out;
+}
 
 function stopSim() {
   if (state.sim) clearTimeout(state.sim);
@@ -290,11 +437,219 @@ function stopSim() {
   updateGpsUi();
 }
 
+// ------------------------------------------------------------ navigation
+
+const nav = {
+  open: false,
+  route: null, // approach route from /api/route
+  routeTo: null, // start point the route was made for
+  cum: [], // cumulative distance at each geometry vertex
+  stepAt: [], // distance along the route of each step's manoeuvre
+  loading: false,
+  offCount: 0,
+  lastReroute: 0,
+  prev: null, // previous fix, for speed when GPS gives none
+  speedKmh: null,
+};
+
+async function startMission() {
+  renderTracking(await api("/api/tracking/start", { method: "POST" }));
+}
+
+$("#btn-start").addEventListener("click", async () => {
+  try {
+    if (!["approach", "laying"].includes(state.tracking?.status)) await startMission();
+    openNav();
+  } catch (err) { toast(err.message, true); }
+});
+$("#nav-close").addEventListener("click", closeNav);
+
+function openNav() {
+  nav.open = true;
+  $("#view-dashboard").classList.add("nav-open");
+  $("#nav-panel").classList.remove("hidden");
+  setTimeout(() => map.invalidateSize(), 50);
+  updateNav(state.tracking);
+}
+
+function closeNav() {
+  nav.open = false;
+  $("#view-dashboard").classList.remove("nav-open");
+  $("#nav-panel").classList.add("hidden");
+  setTimeout(() => map.invalidateSize(), 50);
+}
+
+function resetNavRoute() {
+  nav.route = null;
+  nav.routeTo = null;
+}
+
+// Local flat projection, metres; fine over a few tens of km.
+function toXY(o, p) {
+  const k = Math.PI / 180, R = 6371000;
+  return [(p[1] - o[1]) * k * R * Math.cos(o[0] * k), (p[0] - o[0]) * k * R];
+}
+
+function cumulative(path) {
+  const c = [0];
+  for (let i = 1; i < path.length; i++) c.push(c[i - 1] + haversine(path[i - 1], path[i]));
+  return c;
+}
+
+// Where is p along the path? -> { along, off } in metres.
+function locate(path, cum, p) {
+  let best = { along: 0, off: Infinity };
+  for (let i = 0; i + 1 < path.length; i++) {
+    const [bx, by] = toXY(path[i], path[i + 1]), [px, py] = toXY(path[i], p);
+    const L2 = bx * bx + by * by;
+    const t = L2 ? Math.max(0, Math.min(1, (px * bx + py * by) / L2)) : 0;
+    const off = Math.hypot(px - t * bx, py - t * by);
+    if (off < best.off) best = { along: cum[i] + t * (cum[i + 1] - cum[i]), off };
+  }
+  return best;
+}
+
+async function fetchRoute(from, to) {
+  if (nav.loading) return;
+  nav.loading = true;
+  try {
+    const r = await api(`/api/route?from_lat=${from[0]}&from_lng=${from[1]}&to_lat=${to[0]}&to_lng=${to[1]}`);
+    nav.route = r;
+    nav.routeTo = to.join(",");
+    nav.cum = cumulative(r.geometry);
+    nav.stepAt = r.steps.map((s) => locate(r.geometry, nav.cum, s.location).along);
+    nav.offCount = 0;
+    if (nav.open) map.fitBounds([...r.geometry, ...(state.tracking.end ? [state.tracking.end] : [])], { padding: [40, 40] });
+    renderTracking(state.tracking);
+  } catch (err) {
+    toast(`Routing failed: ${err.message}`, true);
+  } finally {
+    nav.loading = false;
+  }
+}
+
+function currentSpeedKmh(v) {
+  if (v.speed != null && v.speed >= 0) return v.speed * 3.6;
+  const p = nav.prev;
+  if (p && v.ts > p.ts) return (haversine([p.lat, p.lng], [v.lat, v.lng]) / (v.ts - p.ts)) * 3.6;
+  return null;
+}
+
+function fmtDuration(s) {
+  if (s == null || !Number.isFinite(s)) return "–";
+  const m = Math.round(s / 60);
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
+}
+
+function bearingDeg(a, b) {
+  const k = Math.PI / 180;
+  const y = Math.sin((b[1] - a[1]) * k) * Math.cos(b[0] * k);
+  const x = Math.cos(a[0] * k) * Math.sin(b[0] * k) - Math.sin(a[0] * k) * Math.cos(b[0] * k) * Math.cos((b[1] - a[1]) * k);
+  return (Math.atan2(y, x) / k + 360) % 360;
+}
+const COMPASS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+const compassOf = (d) => COMPASS[Math.round(d / 45) % 8];
+
+function updateNav(t) {
+  const v = t?.vehicle;
+  if (v && (!nav.prev || nav.prev.ts !== v.ts)) {
+    nav.speedKmh = currentSpeedKmh(v);
+    nav.prev = { lat: v.lat, lng: v.lng, ts: v.ts };
+  }
+  if (!nav.open || !t) return;
+  const params = t.params;
+  const tol = state.settings?.speed_tol_pct ?? 10;
+  const el = (id, html) => { $(id).innerHTML = html; };
+  $("#nav-phase").textContent = { approach: "To start point", laying: "Laying", complete: "Complete" }[t.status] || t.status;
+
+  if (!v) {
+    el("#nav-current", '<div class="nav-instr">Waiting for the vehicle\'s GPS…</div><div class="small muted">Press "Use this device\'s GPS" on the device in the vehicle.</div>');
+    el("#nav-stats", "");
+    el("#nav-steps", "");
+    $("#nav-speed").classList.add("hidden");
+    return;
+  }
+  const here = [v.lat, v.lng];
+  if (!map.getBounds().pad(-0.15).contains(here)) map.panTo(here); // keep the vehicle in view
+  const stripBrg = bearingDeg(t.start, t.end);
+  const layStep = `Lay along the strip: head ${compassOf(stripBrg)} (${stripBrg.toFixed(0)}°) for ${fmtM(t.strip_length_m)}${params ? ` at ${params.required_speed_kmh} km/h` : ""}`;
+  let stats = [], current = "", steps = [];
+
+  if (t.status === "approach") {
+    if (!nav.route || nav.routeTo !== t.start.join(",")) fetchRoute(here, t.start);
+    if (nav.route) {
+      const r = nav.route;
+      const total = nav.cum[nav.cum.length - 1];
+      const pos = locate(r.geometry, nav.cum, here);
+      if (pos.off > (state.config?.off_route_m ?? 50)) nav.offCount++; else nav.offCount = 0;
+      if (nav.offCount >= 2 && Date.now() - nav.lastReroute > 15000) {
+        nav.lastReroute = Date.now();
+        toast("Off route – recalculating");
+        nav.route = null;
+        fetchRoute(here, t.start);
+      }
+      const remaining = Math.max(0, total - pos.along);
+      let next = nav.stepAt.findIndex((d, i) => i > 0 && d > pos.along + 5);
+      if (next < 0) next = r.steps.length - 1;
+      const toNext = Math.max(0, nav.stepAt[next] - pos.along);
+      const eta = r.duration_s != null
+        ? [r.duration_s * (remaining / total), "road speeds"]
+        : nav.speedKmh > 3 ? [remaining / (nav.speedKmh / 3.6), "current speed"] : [null, ""];
+      current = `<div class="nav-dist">${fmtM(toNext)}</div><div class="nav-instr">${esc(r.steps[next].text)}</div>
+        ${nav.offCount ? '<div class="warn small">Off route</div>' : ""}`;
+      stats = [
+        ["To start point", fmtM(remaining)],
+        ["ETA to start", `${fmtDuration(eta[0])}${eta[1] ? ` <span class="muted small">(${eta[1]})</span>` : ""}`],
+        ["Total remaining", fmtM(remaining + (t.strip_length_m || 0))],
+      ];
+      steps = r.steps.map((s, i) => ({ text: s.text, dist: s.distance_m, done: i < next, now: i === next }));
+      if (r.warning) stats.push(["Routing", `<span class="warn small">${esc(r.warning)}</span>`]);
+    } else {
+      current = '<div class="nav-instr">Calculating route…</div>';
+    }
+    steps.push({ text: layStep, dist: t.strip_length_m }, { text: "Arrive at end point", dist: 0 });
+  } else if (t.status === "laying" || t.status === "complete") {
+    const done = t.status === "complete";
+    const remaining = t.strip?.remaining_m ?? 0;
+    current = done
+      ? '<div class="nav-instr">End point reached. Laying complete.</div>'
+      : `<div class="nav-dist">${fmtM(remaining)}</div><div class="nav-instr">${esc(layStep)}</div>
+         ${t.strip?.off_route ? `<div class="warn small">${fmtM(t.strip.cross_track_m)} off the centreline</div>` : ""}`;
+    stats = [["To end point", fmtM(remaining)], ["Strip covered", `${Math.round((t.covered || 0) * 100)}%`]];
+    steps = [{ text: "Start point reached", done: true }, { text: layStep, dist: t.strip_length_m, now: !done, done }, { text: "Arrive at end point", now: done }];
+  } else {
+    current = '<div class="nav-instr">Press Start to begin.</div>';
+  }
+
+  // Speed box during the laying leg.
+  const box = $("#nav-speed");
+  if (t.status === "laying" && params) {
+    const req = params.required_speed_kmh, cur = nav.speedKmh;
+    const lo = req * (1 - tol / 100), hi = req * (1 + tol / 100);
+    let cls = "unknown", msg = "No speed reading yet";
+    if (cur != null) {
+      if (cur < lo) { cls = "bad"; msg = `Too slow – speed up to ${req} km/h`; }
+      else if (cur > hi) { cls = "bad"; msg = `Too fast – slow down to ${req} km/h`; }
+      else { cls = "ok"; msg = "Speed within tolerance"; }
+    }
+    box.className = `nav-speed ${cls}`;
+    box.innerHTML = `<div><div class="label">Current</div><b>${cur == null ? "–" : cur.toFixed(1)}</b> km/h</div>
+      <div><div class="label">Required</div><b>${req}</b> km/h</div>
+      <div class="msg">${msg}<div class="small muted">Tolerance ±${tol}% (${lo.toFixed(1)}–${hi.toFixed(1)} km/h)</div></div>`;
+  } else {
+    box.className = "nav-speed hidden";
+  }
+
+  el("#nav-current", current);
+  el("#nav-stats", stats.map(([k, val]) => `<div class="kv"><span>${k}</span><span>${val}</span></div>`).join(""));
+  el("#nav-steps", steps.map((s) => `<li class="${s.done ? "done" : ""} ${s.now ? "now" : ""}"><span>${esc(s.text)}</span>${s.dist ? `<span class="muted">${fmtM(s.dist)}</span>` : ""}</li>`).join(""));
+}
+
 // ------------------------------------------------------------ tracking render
 
 const PHASES = {
-  idle: ["idle", "Mark a start and end point on the map."],
-  planned: ["planned", "Route set. Start the mission when the vehicle is ready."],
+  idle: ["idle", "Set a start point, the mine parameters and an end point."],
+  planned: ["planned", "Ready. Press Start when the vehicle is ready."],
   approach: ["approach", "Vehicle moving to the start point."],
   laying: ["laying", "Vehicle progressing along the strip."],
   complete: ["complete", "End point reached."],
@@ -312,20 +667,23 @@ function renderTracking(t) {
     const mid = [t.start[0] + (t.end[0] - t.start[0]) * covered, t.start[1] + (t.end[1] - t.start[1]) * covered];
     L.polyline([t.start, t.end], { color: "#4c8dff", weight: 5, opacity: 0.45 }).addTo(strip);
     if (covered > 0) L.polyline([t.start, mid], { color: "#4c8dff", weight: 5 }).addTo(strip);
-    L.marker(t.start, { icon: startIcon }).bindTooltip("Start").addTo(strip);
-    L.marker(t.end, { icon: endIcon }).bindTooltip("End").addTo(strip);
-  } else {
-    drawPending();
   }
+  if (t.start) L.marker(t.start, { icon: startIcon }).bindTooltip(`Start · ${t.grid?.start || ""}`).addTo(strip);
+  if (t.end) L.marker(t.end, { icon: endIcon }).bindTooltip(`End · ${t.grid?.end || ""}`).addTo(strip);
 
   const v = t.vehicle;
   if (v) {
     const here = [v.lat, v.lng];
     if (t.trail.length > 1) L.polyline(t.trail, { color: "#f5a524", weight: 2, opacity: 0.8 }).addTo(layers.vehicle);
     if (v.accuracy) L.circle(here, { radius: v.accuracy, color: "#f5a524", weight: 1, fillOpacity: 0.06 }).addTo(layers.vehicle);
-    L.marker(here, { icon: vehicleIcon, zIndexOffset: 1000 }).bindTooltip(`Updated ${new Date(v.ts * 1000).toLocaleTimeString()}`).addTo(layers.vehicle);
+    L.marker(here, { icon: vehicleIcon, zIndexOffset: 1000 }).bindTooltip(`${t.grid?.vehicle || ""} · ${new Date(v.ts * 1000).toLocaleTimeString()}`).addTo(layers.vehicle);
     if (t.start && (t.status === "approach" || t.status === "planned")) {
-      L.polyline([here, t.start], { color: "#ffffff", weight: 3, dashArray: "6 8", opacity: 0.9 }).addTo(approach);
+      if (nav.route && nav.routeTo === t.start.join(",")) {
+        L.polyline(nav.route.geometry, { color: "#1b1c18", weight: 8, opacity: 0.7 }).addTo(approach);
+        L.polyline(nav.route.geometry, { color: "#ffffff", weight: 4, dashArray: nav.route.source === "osrm" ? null : "6 8" }).addTo(approach);
+      } else {
+        L.polyline([here, t.start], { color: "#ffffff", weight: 3, dashArray: "6 8", opacity: 0.9 }).addTo(approach);
+      }
     }
     if (!centredOnce) { map.setView(here, 16); centredOnce = true; }
   } else if (t.start && !centredOnce) {
@@ -341,17 +699,24 @@ function renderTracking(t) {
   $("#phase-text").textContent = text;
 
   const rows = [];
+  if (t.grid?.start) rows.push(["Start GR", t.grid.start]);
+  if (t.grid?.end) rows.push(["End GR", t.grid.end]);
   if (t.strip_length_m != null) rows.push(["Strip length", fmtM(t.strip_length_m)]);
-  if (t.approach && t.status === "approach") {
-    rows.push(["To start point", fmtM(t.approach.distance_to_start_m)]);
-    if (t.approach.progress != null) rows.push(["Approach", `${Math.round(t.approach.progress * 100)}%`]);
+  const p = t.params;
+  if (p) {
+    rows.push(["Mine type", p.mine_type === "mixed" ? `Mixed (ATM ${p.atm} / APM ${p.apm})` : `Anti-tank ${p.atm}`]);
+    rows.push(["Time gap · speed", `${p.time_gap_s} s · ${p.required_speed_kmh} km/h`]);
+    rows.push(["Chart frontage", `${p.frontage_m} m`]);
+    if (p.flags.length) rows.push(["Chart check", "⚠ see parameters", true]);
   }
+  if (t.approach && t.status === "approach") rows.push(["To start (direct)", fmtM(t.approach.distance_to_start_m)]);
   if (t.strip && (t.status === "laying" || t.status === "complete")) {
     rows.push(["Remaining", fmtM(t.strip.remaining_m)]);
     rows.push(["Off centreline", `${fmtM(t.strip.cross_track_m)}${t.strip.off_route ? " ⚠" : ""}`, t.strip.off_route]);
   }
   if (v) rows.push(["Last fix", `${Math.max(0, Math.round(Date.now() / 1000 + state.serverOffset - v.ts))} s ago`]);
   $("#track-stats").innerHTML = rows.map(([k, val, warn]) => `<div class="kv"><span>${k}</span><span class="${warn ? "warn" : ""}">${val}</span></div>`).join("");
+  updateNav(t);
 }
 
 async function loadTracking() {
@@ -458,6 +823,10 @@ function renderSettings(s) {
   }
   sel.value = val;
   sel.dataset.current = val;
+
+  $("#grid-form [name=gzd]").value = s.grid_gzd;
+  $("#grid-form [name=square]").value = s.grid_square;
+  if (document.activeElement?.name !== "pct") $("#tol-form [name=pct]").value = s.speed_tol_pct;
 
   const total = s.total_canisters, fired = s.fired_canisters;
   $("#ammo-total").textContent = total;
@@ -641,6 +1010,23 @@ $("#doc-form").addEventListener("submit", async (e) => {
 
 // ------------------------------------------------------------ settings page
 
+$("#grid-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  try {
+    renderSettings(await api("/api/settings/grid", { method: "PUT", json: { gzd: fd.get("gzd"), square: fd.get("square") } }));
+    toast("Grid defaults saved");
+  } catch (err) { toast(err.message, true); }
+});
+
+$("#tol-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    renderSettings(await api("/api/settings/speed-tolerance", { method: "PUT", json: { pct: +new FormData(e.target).get("pct") } }));
+    toast("Speed tolerance saved");
+  } catch (err) { toast(err.message, true); }
+});
+
 $("#pw-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const fd = new FormData(e.target);
@@ -695,6 +1081,8 @@ $("#chat-open").addEventListener("click", () => { $("#chat").classList.remove("h
   $("#username").textContent = state.me.username;
   $("#avatar").textContent = state.me.username[0];
   if (state.me.role === "admin") $$(".admin-only").forEach((el) => el.classList.remove("hidden"));
+  state.config = await api("/api/config");
+  setTiles(state.config);
   renderSettings(await api("/api/settings"));
   await Promise.all([loadTracking(), loadMarkers()]);
   setInterval(loadTracking, 3000);

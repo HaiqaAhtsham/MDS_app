@@ -13,7 +13,7 @@ start->end line. We keep the furthest projection reached so far
 
 import time
 
-from . import config, db
+from . import config, db, density, mgrs
 from .geo import haversine, project_on_segment
 
 TRAIL_LIMIT = 500
@@ -38,11 +38,48 @@ def set_route(start: tuple[float, float], end: tuple[float, float]) -> None:
         )
 
 
+def set_point(which: str, lat: float, lng: float) -> None:
+    """Set the start or end point; the mission goes back to planning."""
+    col = {"start": "start", "end": "end"}[which]
+    with db.tx() as c:
+        c.execute(
+            f"""UPDATE mission SET {col}_lat = ?, {col}_lng = ?, origin_lat = NULL, origin_lng = NULL,
+                reached_start = 0, max_progress = 0, started_at = NULL WHERE id = 1""",
+            (lat, lng),
+        )
+        # Separate statement: SET expressions see the row as it was before the update.
+        c.execute(
+            """UPDATE mission SET status = CASE WHEN start_lat IS NOT NULL AND end_lat IS NOT NULL
+               THEN 'planned' ELSE 'idle' END WHERE id = 1"""
+        )
+
+
+def set_params(mine_type: str, atm: float, apm: float | None, time_gap: int) -> dict:
+    result = density.calculate(mine_type, time_gap, atm, apm)  # raises SelectionError
+    with db.tx() as c:
+        c.execute(
+            "UPDATE mission SET mine_type = ?, atm = ?, apm = ?, time_gap = ? WHERE id = 1",
+            (mine_type, result["atm"], result["apm"], time_gap),
+        )
+    return result
+
+
+def _params(m: dict) -> dict | None:
+    if not m.get("mine_type"):
+        return None
+    try:
+        return density.calculate(m["mine_type"], m["time_gap"], m["atm"], m["apm"])
+    except density.SelectionError:
+        return None
+
+
 def start_mission() -> dict:
     with db.tx() as c:
         m = _mission(c)
         if m["start_lat"] is None or m["end_lat"] is None:
-            raise ValueError("Mark a start and end point first")
+            raise ValueError("Set a start and end point first")
+        if not _params(m):
+            raise ValueError("Choose the mine type and parameters first")
         pos = _latest(c)
         origin = (pos["lat"], pos["lng"]) if pos and time.time() - pos["ts"] < 300 else (None, None)
         c.execute(
@@ -60,7 +97,8 @@ def reset_mission() -> None:
         c.execute(
             """UPDATE mission SET start_lat = NULL, start_lng = NULL, end_lat = NULL, end_lng = NULL,
                origin_lat = NULL, origin_lng = NULL, reached_start = 0, max_progress = 0,
-               status = 'idle', started_at = NULL WHERE id = 1"""
+               status = 'idle', started_at = NULL, mine_type = NULL, atm = NULL, apm = NULL,
+               time_gap = NULL WHERE id = 1"""
         )
         c.execute("DELETE FROM positions")
 
@@ -123,10 +161,13 @@ def state() -> dict:
         "vehicle": pos,
         "trail": trail,
         "covered": round(m["max_progress"], 4),
+        "params": _params(m),
         "strip_length_m": None,
         "approach": None,
         "strip": None,
     }
+    out["grid"] = {k: _gr(out[k]) for k in ("start", "end")}
+    out["grid"]["vehicle"] = _gr([pos["lat"], pos["lng"]]) if pos else None
     if not out["start"] or not out["end"]:
         return out
     start, end = tuple(out["start"]), tuple(out["end"])
@@ -153,3 +194,13 @@ def state() -> dict:
         "remaining_m": round(length * (1 - m["max_progress"]), 1),
     }
     return out
+
+
+def _gr(p) -> str | None:
+    """Six-figure MGRS grid reference for display."""
+    if not p:
+        return None
+    try:
+        return mgrs.to_mgrs(p[0], p[1], digits=6)
+    except mgrs.GridError:
+        return None
