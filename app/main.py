@@ -623,7 +623,7 @@ def login_page():
 
 @app.get("/favicon.ico")
 def favicon():
-    return RedirectResponse("/static/logo.svg")
+    return RedirectResponse("/static/logo.png")
 
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
