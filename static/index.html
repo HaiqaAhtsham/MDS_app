@@ -14,14 +14,13 @@
     <img class="logo" src="/static/logo.png" alt="MDS">
     <button data-view="dashboard" class="active" title="Dashboard">
       <svg viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="8" height="10" rx="1.5"/><rect x="13" y="3" width="8" height="6" rx="1.5"/><rect x="13" y="11" width="8" height="10" rx="1.5"/><rect x="3" y="15" width="8" height="6" rx="1.5"/></svg>
-    </button>
+    </button> 
     <button data-view="users" class="admin-only hidden" title="Users">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5"/><path d="M16 4.8a3.5 3.5 0 0 1 0 6.4M18 14.8c1.8.8 3 2.6 3.5 5.2"/></svg>
     </button>
     <button data-view="detect" title="Drone video detection">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/></svg>
-    </button>
-    <button data-view="docs" title="Documents">
+      <svg viewBox="0 0 24 24" fill="none" stroke("currentColor", stroke-width("1.8", stroke-linejoin("round", "<path d=\"M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 
+
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/></svg>
     </button>
     <button data-view="settings" title="Settings">
@@ -71,7 +70,7 @@
           <div id="map-hint" class="map-hint hidden"></div>
           <div class="mission-bar">
             <button class="btn" id="btn-set-start">Start point</button>
-            <button class="btn" id="btn-params">Mine parameters</button>
+            <button class="btn" id="btn-params">Mine fd parameters</button>
             <button class="btn" id="btn-set-end">End point</button>
             <button class="btn primary" id="btn-start">Start</button>
             <button class="btn" id="btn-gps">Use this device's GPS</button>
@@ -106,13 +105,13 @@
             <div class="card-h">Control Module</div>
             <div class="card-b">
               <div class="field">
-                <label for="sd-select">Set self-destruct time</label>
+                <label for="sd-select">Set self destruct time</label>
                 <select id="sd-select" class="sd-select">
-                  <option value="12">12h</option>
-                  <option value="24">24h</option>
-                  <option value="48">48h</option>
-                  <option value="72">72h</option>
-                  <option value="custom">Custom (1–272 h)…</option>
+                  <option value="12">12 hrs</option>
+                  <option value="24">24 hrs</option>
+                  <option value="48">48 hrs</option>
+                  <option value="72">72 hrs</option>
+                  <option value="custom">Custom (1–272 hrs)…</option>
                 </select>
               </div>
               <label class="check"><input type="checkbox" id="sd-apply"> Also apply to objects already marked</label>
@@ -279,13 +278,13 @@
 
 <dialog id="params-dialog" class="dlg">
   <form id="pm-form" method="dialog">
-    <h3>Mine type and parameters</h3>
+    <h3>Mine fd parameters</h3>
     <div class="row">
-      <label class="check"><input type="radio" name="pm-type" id="pm-type-at" value="at" checked> Anti-tank (ATM) only</label>
+      <label class="check"><input type="radio" name="pm-type" id="pm-type-at" value="at" checked> ATM only</label>
       <label class="check"><input type="radio" name="pm-type" id="pm-type-mixed" value="mixed"> Mixed (ATM + APM)</label>
     </div>
     <div class="row" style="margin-top:10px">
-      <div class="field"><label id="pm-atm-label">Anti-tank (ATM) density</label><select id="pm-atm"></select></div>
+      <div class="field"><label id="pm-atm-label">ATM density</label><select id="pm-atm"></select></div>
       <div class="field hidden" id="pm-apm-field"><label>APM density (paired in chart)</label><select id="pm-apm"></select></div>
       <div class="field"><label>Time interval</label><select id="pm-gap"></select></div>
     </div>
