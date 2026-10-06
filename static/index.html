@@ -91,6 +91,7 @@
               </div>
               <div class="phase muted" id="phase-text">Mark a start and end point on the map.</div>
               <div id="track-stats" style="margin-top:10px"></div>
+              <div id="frontage-warn" class="frontage-warn hidden"></div>
             </div>
           </div>
 
@@ -249,7 +250,16 @@
 <dialog id="point-dialog" class="dlg">
   <form id="pt-form" method="dialog">
     <h3 id="pt-title">Start point</h3>
-    <div class="row">
+    <div class="tabs hidden" id="pt-modes">
+      <button type="button" class="btn sm" data-mode="frontage">Along frontage (recommended)</button>
+      <button type="button" class="btn sm" data-mode="latlng">Type lat / long</button>
+    </div>
+    <div id="pt-dir" class="hidden">
+      <p class="small muted" id="pt-dir-note"></p>
+      <div class="field"><label>Direction of the minefield: bearing from the start point (° from north, 0–360)</label>
+        <input id="pt-bearing" type="number" min="0" max="360" step="0.1" placeholder="e.g. 60"></div>
+    </div>
+    <div class="row" id="pt-ll">
       <div class="field"><label>Latitude (decimal °)</label><input id="pt-lat" placeholder="33.684422" inputmode="decimal"></div>
       <div class="field"><label>Longitude (decimal °)</label><input id="pt-lng" placeholder="73.047882" inputmode="decimal"></div>
     </div>

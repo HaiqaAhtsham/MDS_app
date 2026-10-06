@@ -73,6 +73,9 @@ CREATE TABLE IF NOT EXISTS jobs (
 MISSION_COLUMNS = {
     "mine_type": "TEXT", "atm": "REAL", "apm": "REAL", "time_gap": "INTEGER",
     "fire_next_at": "REAL", "fire_stopped": "TEXT",
+    # Set when the end point was placed one frontage from the start along this
+    # bearing; NULL when the end point was entered by hand.
+    "end_bearing": "REAL",
 }
 
 # Canister stock per type (handout p. 9: GBL-240 and GBL-243 are the two types in use).

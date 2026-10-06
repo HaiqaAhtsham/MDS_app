@@ -66,7 +66,9 @@ Another way is a reverse proxy with a real certificate (nginx, Caddy).
    - Time interval: 1, 2 or 5 s, the only rows in the chart.
 
    The dialog shows the **frontage** and the **required vehicle speed** from the chart, the chart rows they came from, and a hand check (see below).
-3. **End point.** Uses the same dialog as the start point.
+3. **End point.** By default the end point is **calculated from the frontage**: give the direction the minefield runs, either as a bearing from the start point (0–360°) or with **Pick direction on map** (click anywhere that way; only the direction is used). The app puts the end point exactly one chart frontage from the start, so the strip length always matches the chart.
+   - If the start point or the minefield parameters change later, the end point moves with them, keeping the same direction.
+   - **Type lat / long** is still available. If a typed end point differs from the frontage by more than 1% (or 10 m), the Minefield Progress panel says how much shorter or longer the strip is and offers **Snap end to frontage**, which keeps the direction and corrects the length.
 4. **Start.** Opens the navigation panel:
    - the road route from the vehicle to the start point, then the strip to the end point;
    - turn-by-turn directions, distance to the next turn, distance remaining and ETA to the start point;

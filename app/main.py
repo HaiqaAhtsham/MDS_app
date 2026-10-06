@@ -19,6 +19,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from . import ammo, auth, config, db, density, detection, rag, routing, tracking
+from .geo import bearing, haversine
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("mds")
@@ -222,6 +223,13 @@ class PointIn(BaseModel):
     lng: float
 
 
+class DirectionIn(BaseModel):
+    bearing_deg: float | None = Field(default=None, ge=0, le=360)
+    # Or: a point that only sets the direction (e.g. clicked on the map).
+    toward_lat: float | None = None
+    toward_lng: float | None = None
+
+
 class ParamsIn(BaseModel):
     mine_type: str = Field(pattern="^(at|mixed)$")
     atm: float
@@ -233,6 +241,28 @@ class ParamsIn(BaseModel):
 def set_point(body: PointIn, user=User):
     _check((body.lat, body.lng))
     tracking.set_point(body.which, body.lat, body.lng)
+    return tracking.state()
+
+
+@app.post("/api/tracking/end-direction")
+def set_end_direction(body: DirectionIn, user=User):
+    """End point = start point + one chart frontage along a bearing."""
+    if body.bearing_deg is not None:
+        brg = body.bearing_deg
+    elif body.toward_lat is not None and body.toward_lng is not None:
+        start = tracking.state()["start"]
+        if not start:
+            raise HTTPException(400, "Set the start point first")
+        toward = _check((body.toward_lat, body.toward_lng))
+        if haversine(*start, *toward) < 1:
+            raise HTTPException(400, "Pick a point away from the start point to give the direction")
+        brg = bearing(tuple(start), toward)
+    else:
+        raise HTTPException(400, "Give a bearing or a point in the direction of the minefield")
+    try:
+        tracking.set_end_direction(brg)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     return tracking.state()
 
 

@@ -16,7 +16,7 @@ While laying, canisters are counted as fired once per time gap (see ammo.py).
 import time
 
 from . import ammo, config, db, density
-from .geo import haversine, project_on_segment
+from .geo import bearing, destination, haversine, project_on_segment
 
 TRAIL_LIMIT = 500
 
@@ -40,21 +40,49 @@ def set_route(start: tuple[float, float], end: tuple[float, float]) -> None:
         )
 
 
+def _replan(c) -> None:
+    """Any change to the route sends the mission back to planning."""
+    c.execute(
+        """UPDATE mission SET origin_lat = NULL, origin_lng = NULL, reached_start = 0, max_progress = 0,
+           started_at = NULL, fire_next_at = NULL, fire_stopped = NULL,
+           status = CASE WHEN start_lat IS NOT NULL AND end_lat IS NOT NULL THEN 'planned' ELSE 'idle' END
+           WHERE id = 1"""
+    )
+
+
+def _place_end_by_frontage(c) -> None:
+    """If the end point follows the frontage, put it exactly one frontage
+    from the start along the saved bearing."""
+    m = _mission(c)
+    params = _params(m)
+    if m["end_bearing"] is None or m["start_lat"] is None or not params:
+        return
+    end = destination(m["start_lat"], m["start_lng"], m["end_bearing"], params["frontage_m"])
+    c.execute("UPDATE mission SET end_lat = ?, end_lng = ? WHERE id = 1", end)
+
+
 def set_point(which: str, lat: float, lng: float) -> None:
-    """Set the start or end point; the mission goes back to planning."""
-    col = {"start": "start", "end": "end"}[which]
+    """Set the start point, or an end point typed by hand."""
     with db.tx() as c:
-        c.execute(
-            f"""UPDATE mission SET {col}_lat = ?, {col}_lng = ?, origin_lat = NULL, origin_lng = NULL,
-                reached_start = 0, max_progress = 0, started_at = NULL, fire_next_at = NULL,
-                fire_stopped = NULL WHERE id = 1""",
-            (lat, lng),
-        )
-        # Separate statement: SET expressions see the row as it was before the update.
-        c.execute(
-            """UPDATE mission SET status = CASE WHEN start_lat IS NOT NULL AND end_lat IS NOT NULL
-               THEN 'planned' ELSE 'idle' END WHERE id = 1"""
-        )
+        if which == "start":
+            c.execute("UPDATE mission SET start_lat = ?, start_lng = ? WHERE id = 1", (lat, lng))
+            _place_end_by_frontage(c)  # keep direction and frontage from the new start
+        else:
+            c.execute("UPDATE mission SET end_lat = ?, end_lng = ?, end_bearing = NULL WHERE id = 1", (lat, lng))
+        _replan(c)
+
+
+def set_end_direction(bearing_deg: float) -> None:
+    """Place the end point one chart frontage from the start, along bearing_deg."""
+    with db.tx() as c:
+        m = _mission(c)
+        if m["start_lat"] is None:
+            raise ValueError("Set the start point first")
+        if not _params(m):
+            raise ValueError("Choose the minefield parameters first; the frontage comes from them")
+        c.execute("UPDATE mission SET end_bearing = ? WHERE id = 1", (bearing_deg % 360,))
+        _place_end_by_frontage(c)
+        _replan(c)
 
 
 def set_params(mine_type: str, atm: float, apm: float | None, time_gap: int) -> dict:
@@ -64,6 +92,10 @@ def set_params(mine_type: str, atm: float, apm: float | None, time_gap: int) -> 
             "UPDATE mission SET mine_type = ?, atm = ?, apm = ?, time_gap = ? WHERE id = 1",
             (mine_type, result["atm"], result["apm"], time_gap),
         )
+        m = _mission(c)
+        if m["end_bearing"] is not None and m["start_lat"] is not None:
+            _place_end_by_frontage(c)  # new frontage -> new end point
+            _replan(c)
     return result
 
 
@@ -102,7 +134,7 @@ def reset_mission() -> None:
             """UPDATE mission SET start_lat = NULL, start_lng = NULL, end_lat = NULL, end_lng = NULL,
                origin_lat = NULL, origin_lng = NULL, reached_start = 0, max_progress = 0,
                status = 'idle', started_at = NULL, mine_type = NULL, atm = NULL, apm = NULL,
-               time_gap = NULL, fire_next_at = NULL, fire_stopped = NULL WHERE id = 1"""
+               time_gap = NULL, fire_next_at = NULL, fire_stopped = NULL, end_bearing = NULL WHERE id = 1"""
         )
         c.execute("DELETE FROM positions")
 
@@ -178,6 +210,9 @@ def state() -> dict:
             "stopped": m["fire_stopped"],
         },
         "strip_length_m": None,
+        "end_mode": None,
+        "strip_bearing": None,
+        "frontage_diff_m": None,
         "approach": None,
         "strip": None,
     }
@@ -185,6 +220,11 @@ def state() -> dict:
         return out
     start, end = tuple(out["start"]), tuple(out["end"])
     out["strip_length_m"] = round(haversine(*start, *end), 1)
+    out["end_mode"] = "frontage" if m["end_bearing"] is not None else "manual"
+    out["strip_bearing"] = round(bearing(start, end), 1)
+    if out["params"]:
+        # Positive: the strip is longer than one frontage; negative: shorter.
+        out["frontage_diff_m"] = round(out["strip_length_m"] - out["params"]["frontage_m"], 1)
     if not pos:
         return out
 

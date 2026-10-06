@@ -111,3 +111,35 @@ def test_mixed_field_fires_gbl243_and_stops_at_end(client, monkeypatch):
     assert s["status"] == "complete" and s["ammo"]["types"]["GBL-243"]["fired"] == 3
     clock[0] += 60  # no more firing after the end point
     assert client.get("/api/tracking").json()["ammo"]["types"]["GBL-243"]["fired"] == 3
+
+
+def test_end_point_from_frontage(client):
+    r = client.post("/api/tracking/end-direction", json={"bearing_deg": 90})
+    assert r.status_code == 400 and "start point" in r.json()["detail"]
+    client.post("/api/tracking/point", json={"which": "start", "lat": START[0], "lng": START[1]})
+    r = client.post("/api/tracking/end-direction", json={"bearing_deg": 90})
+    assert r.status_code == 400 and "parameters" in r.json()["detail"]
+
+    client.put("/api/tracking/params", json={"mine_type": "at", "atm": 0.5, "time_gap": 2})  # frontage 2880 m
+    s = client.post("/api/tracking/end-direction", json={"bearing_deg": 90}).json()
+    assert s["status"] == "planned" and s["end_mode"] == "frontage"
+    assert abs(s["strip_length_m"] - 2880) < 0.5 and abs(s["frontage_diff_m"]) < 0.5
+    assert abs(s["strip_bearing"] - 90) < 0.5
+
+    # Direction from a clicked point: only the direction is used.
+    toward = from_local(*START, 100, 100)  # 141 m away, to the north-east
+    s = client.post("/api/tracking/end-direction", json={"toward_lat": toward[0], "toward_lng": toward[1]}).json()
+    assert abs(s["strip_length_m"] - 2880) < 0.5 and abs(s["strip_bearing"] - 45) < 0.5
+
+    # New parameters -> new frontage -> end point moves with it.
+    s = client.put("/api/tracking/params", json={"mine_type": "at", "atm": 1, "time_gap": 2}).json()
+    assert abs(s["strip_length_m"] - 1440) < 0.5 and abs(s["strip_bearing"] - 45) < 0.5
+
+    # Moving the start keeps direction and frontage.
+    new_start = from_local(*START, 500, 0)
+    s = client.post("/api/tracking/point", json={"which": "start", "lat": new_start[0], "lng": new_start[1]}).json()
+    assert abs(s["strip_length_m"] - 1440) < 0.5 and abs(s["strip_bearing"] - 45) < 0.5
+
+    # A typed end point is kept as entered, and the difference is reported.
+    s = client.post("/api/tracking/point", json={"which": "end", "lat": END[0], "lng": END[1]}).json()
+    assert s["end_mode"] == "manual" and abs(s["frontage_diff_m"] - (s["strip_length_m"] - 1440)) < 0.2

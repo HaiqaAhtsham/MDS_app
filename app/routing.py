@@ -15,21 +15,13 @@ import math
 import httpx
 
 from . import config
-from .geo import haversine
+from .geo import bearing, haversine
 
 # Gap between the requested point and the road OSRM snapped it to, above
 # which an explicit cross-country step is added.
 OFFROAD_STEP_M = 15
 
 _COMPASS = ["north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"]
-
-
-def bearing(a: tuple[float, float], b: tuple[float, float]) -> float:
-    p1, p2 = math.radians(a[0]), math.radians(b[0])
-    dl = math.radians(b[1] - a[1])
-    y = math.sin(dl) * math.cos(p2)
-    x = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
-    return (math.degrees(math.atan2(y, x)) + 360) % 360
 
 
 def compass(deg: float) -> str:

@@ -289,3 +289,7 @@ details summary { cursor: pointer; color: var(--muted); margin-bottom: 10px; }
 .ammo-table { margin-top: 10px; font-size: 12px; }
 .ammo-table th, .ammo-table td { padding: 4px 6px; text-align: right; white-space: nowrap; }
 .ammo-table th:first-child, .ammo-table td:first-child { text-align: left; color: var(--muted); }
+
+/* ---------- strip vs frontage warning ---------- */
+.frontage-warn { margin-top: 10px; padding: 8px 10px; border: 1px solid rgba(229,72,77,.6); background: rgba(229,72,77,.12); border-radius: 8px; font-size: 12px; }
+.frontage-warn .btn { margin-top: 6px; }

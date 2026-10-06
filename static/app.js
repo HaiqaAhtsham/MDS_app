@@ -152,7 +152,12 @@ const fmtLL = (p) => (p ? `${p[0].toFixed(6)}, ${p[1].toFixed(6)}` : "–");
 
 function setPick(mode) {
   state.pick = state.pick === mode ? null : mode;
-  const hint = { start: "Click the map to place the START point", end: "Click the map to place the END point", marker: "Click the map to place the marker" }[state.pick];
+  const hint = {
+    start: "Click the map to place the START point",
+    end: "Click the map to place the END point",
+    direction: "Click anywhere in the direction the minefield runs (only the direction is used)",
+    marker: "Click the map to place the marker",
+  }[state.pick];
   $("#map-hint").textContent = hint || "";
   $("#map-hint").classList.toggle("hidden", !hint);
   // While picking, markers, lines and the marked area must not catch the click.
@@ -169,6 +174,7 @@ map.on("click", async (e) => {
   setPick(null);
   const p = [e.latlng.lat, e.latlng.lng];
   if (mode === "marker") return openMarkerDialog(p);
+  if (mode === "direction") return saveEndDirection({ toward_lat: p[0], toward_lng: p[1] });
   await savePoint(mode, p[0], p[1]);
 });
 
@@ -188,14 +194,37 @@ async function savePoint(which, lat, lng) {
 
 const pointDlg = $("#point-dialog");
 let pointWhich = "start";
+let endMode = "frontage";
+
+function setEndMode(mode) {
+  endMode = mode;
+  $$("#pt-modes [data-mode]").forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
+  const byFrontage = pointWhich === "end" && mode === "frontage";
+  $("#pt-dir").classList.toggle("hidden", !byFrontage);
+  $("#pt-ll").classList.toggle("hidden", byFrontage);
+  $("#pt-pick").textContent = byFrontage ? "Pick direction on map" : "Pick on map";
+}
+$$("#pt-modes [data-mode]").forEach((b) => b.addEventListener("click", () => setEndMode(b.dataset.mode)));
 
 function openPointDialog(which) {
   pointWhich = which;
+  const t = state.tracking || {};
   $("#pt-title").textContent = which === "start" ? "Start point" : "End point";
   $("#pt-error").classList.add("hidden");
-  const cur = state.tracking?.[which];
+  $("#pt-modes").classList.toggle("hidden", which !== "end");
+  const cur = t[which];
   $("#pt-lat").value = cur ? cur[0].toFixed(6) : "";
   $("#pt-lng").value = cur ? cur[1].toFixed(6) : "";
+  if (which === "end") {
+    const f = t.params?.frontage_m;
+    $("#pt-dir-note").innerHTML = f
+      ? `The end point is placed exactly <b>${f} m</b> (the chart frontage) from the start point, in the direction you give.`
+      : '<span class="warn">Choose the minefield parameters first: the frontage comes from them.</span>';
+    $("#pt-bearing").value = t.strip_bearing ?? "";
+    setEndMode(t.end_mode === "manual" ? "latlng" : "frontage");
+  } else {
+    setEndMode("latlng");
+  }
   pointDlg.showModal();
 }
 
@@ -205,14 +234,48 @@ function showError(id, msg) {
 }
 
 $("#pt-cancel").addEventListener("click", () => pointDlg.close());
-$("#pt-pick").addEventListener("click", () => { pointDlg.close(); setPick(pointWhich); });
+$("#pt-pick").addEventListener("click", () => {
+  if (pointWhich === "end" && endMode === "frontage") {
+    if (!state.tracking?.start) return showError("#pt-error", "Set the start point first");
+    if (!state.tracking?.params) return showError("#pt-error", "Choose the minefield parameters first");
+    pointDlg.close();
+    return setPick("direction");
+  }
+  pointDlg.close();
+  setPick(pointWhich);
+});
+
+async function saveEndDirection(body) {
+  try {
+    renderTracking(await api("/api/tracking/end-direction", { method: "POST", json: body }));
+    resetNavRoute();
+    const t = state.tracking;
+    map.fitBounds([t.start, t.end], { padding: [60, 60], maxZoom: 17 });
+    toast(`End point set ${fmtM(t.strip_length_m)} from the start, bearing ${t.strip_bearing}°`);
+    return true;
+  } catch (err) {
+    toast(err.message, true);
+    return false;
+  }
+}
 
 $("#pt-form").addEventListener("submit", async (e) => {
   e.preventDefault();
+  if (pointWhich === "end" && endMode === "frontage") {
+    const v = $("#pt-bearing").value.trim();
+    if (v === "" || !(+v >= 0 && +v <= 360)) return showError("#pt-error", "Enter a bearing between 0 and 360°, or pick the direction on the map");
+    if (await saveEndDirection({ bearing_deg: +v })) pointDlg.close();
+    return;
+  }
   const p = parseLatLng($("#pt-lat").value, $("#pt-lng").value);
   if (typeof p === "string") return showError("#pt-error", p);
   pointDlg.close();
   await savePoint(pointWhich, p[0], p[1]);
+});
+
+// Snap a hand-typed end point to the frontage, keeping its direction.
+$("#frontage-warn").addEventListener("click", (e) => {
+  if (e.target.closest("button")) saveEndDirection({ bearing_deg: state.tracking.strip_bearing });
 });
 
 // ------------------------------------------------------------ markers: add dialog
@@ -704,7 +767,10 @@ function renderTracking(t) {
   const rows = [];
   if (t.start) rows.push(["Start Point", fmtLL(t.start)]);
   if (t.end) rows.push(["End Point", fmtLL(t.end)]);
-  if (t.strip_length_m != null) rows.push(["Strip length", fmtM(t.strip_length_m)]);
+  if (t.strip_length_m != null) {
+    rows.push(["Strip length", `${fmtM(t.strip_length_m)}${t.end_mode === "frontage" ? " (= frontage)" : ""}`]);
+    if (t.strip_bearing != null) rows.push(["Strip bearing", `${t.strip_bearing}°`]);
+  }
   const p = t.params;
   if (p) {
     rows.push(["Mine type", p.mine_type === "mixed" ? `Mixed (ATM ${p.atm} / APM ${p.apm})` : `ATM only (${p.atm})`]);
@@ -719,6 +785,15 @@ function renderTracking(t) {
   }
   if (v) rows.push(["Last fix", `${Math.max(0, Math.round(Date.now() / 1000 + state.serverOffset - v.ts))} s ago`]);
   if (t.ammo) renderAmmo(t.ammo, t.firing);
+  // A hand-typed end point that doesn't match the frontage.
+  const diff = t.frontage_diff_m, front = t.params?.frontage_m;
+  const off = diff != null && front && Math.abs(diff) > Math.max(10, 0.01 * front);
+  const warn = $("#frontage-warn");
+  warn.classList.toggle("hidden", !off);
+  if (off) {
+    warn.innerHTML = `⚠ Strip is <b>${fmtM(Math.abs(diff))} ${diff < 0 ? "shorter" : "longer"}</b> than the frontage (${front} m).
+      <button class="btn sm" type="button">Snap end to frontage</button>`;
+  }
   $("#track-stats").innerHTML = rows.map(([k, val, warn]) => `<div class="kv"><span>${k}</span><span class="${warn ? "warn" : ""}">${val}</span></div>`).join("");
   updateNav(t);
 }

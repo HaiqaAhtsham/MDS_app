@@ -41,3 +41,22 @@ def project_on_segment(a: tuple[float, float], b: tuple[float, float], p: tuple[
     t_clamped = min(1.0, max(0.0, t))
     cross = math.hypot(px - t_clamped * bx, py - t_clamped * by)
     return t_clamped, cross, math.sqrt(length_sq)
+
+
+def bearing(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Initial compass bearing from a to b, degrees clockwise from north."""
+    p1, p2 = math.radians(a[0]), math.radians(b[0])
+    dl = math.radians(b[1] - a[1])
+    y = math.sin(dl) * math.cos(p2)
+    x = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
+    return (math.degrees(math.atan2(y, x)) + 360) % 360
+
+
+def destination(lat: float, lng: float, bearing_deg: float, distance_m: float) -> tuple[float, float]:
+    """The point distance_m from (lat, lng) along bearing_deg (great circle)."""
+    d = distance_m / EARTH_R
+    t = math.radians(bearing_deg)
+    p1, l1 = math.radians(lat), math.radians(lng)
+    p2 = math.asin(math.sin(p1) * math.cos(d) + math.cos(p1) * math.sin(d) * math.cos(t))
+    l2 = l1 + math.atan2(math.sin(t) * math.sin(d) * math.cos(p1), math.cos(d) - math.sin(p1) * math.sin(p2))
+    return math.degrees(p2), (math.degrees(l2) + 540) % 360 - 180
