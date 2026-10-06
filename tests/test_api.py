@@ -47,10 +47,33 @@ def test_change_password(client):
 
 
 def test_ammo(client):
-    s = client.get("/api/settings").json()
-    assert s["total_canisters"] == 288
-    assert client.put("/api/settings/ammo", json={"fired": 33}).json()["fired_canisters"] == 33
-    assert client.put("/api/settings/ammo", json={"fired": 999}).status_code == 400
+    a = client.get("/api/ammo").json()
+    assert a["types"]["GBL-240"] == {"total": 0, "loaded": 0, "fired": 0, "remaining": 0}
+
+    def put(total, loaded, **kw):
+        return client.put("/api/ammo", json={"total": dict(zip(("GBL-240", "GBL-243"), total)),
+                                             "loaded": dict(zip(("GBL-240", "GBL-243"), loaded)), **kw})
+
+    r = put((200, 150), (150, 120)).json()
+    assert r["types"]["GBL-243"]["loaded"] == 120 and r["total"] == 350 and r["loaded"] == 270
+    assert put((10, 0), (11, 0)).status_code == 400  # loaded > total
+    assert "288" in put((300, 100), (250, 50)).json()["detail"]  # launchers hold 288
+    assert put((-1, 0), (0, 0)).status_code == 400
+
+
+def test_markers_need_a_type(client):
+    assert client.post("/api/markers", json={"lat": 33.6, "lng": 73.0}).status_code == 422
+    assert client.post("/api/markers", json={"lat": 33.6, "lng": 73.0, "kind": "mine"}).status_code == 422
+    client.post("/api/markers", json={"lat": 33.6, "lng": 73.0, "kind": "ATM"})
+    client.post("/api/markers", json={"lat": 33.6, "lng": 73.001, "kind": "APM"})
+    kinds = sorted(m["label"] for m in client.get("/api/markers").json()["markers"])
+    assert kinds == ["APM", "ATM"]
+
+
+def test_self_destruct_in_minutes(client):
+    assert client.put("/api/settings/sd", json={"hours": 30 / 60}).json()["sd_hours"] == 0.5
+    assert client.put("/api/settings/sd", json={"hours": 0.5 / 60}).status_code == 422  # under 1 minute
+    assert client.put("/api/settings/sd", json={"hours": 273}).status_code == 422
 
 
 def test_chat_answers_from_handout(client):

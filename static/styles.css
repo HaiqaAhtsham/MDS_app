@@ -177,7 +177,8 @@ select, .select {
   box-shadow: 0 0 14px 4px rgba(245, 140, 20, 0.6); display: grid; place-items: center;
   animation: glow 2.2s ease-in-out infinite;
 }
-.obj-icon::after { content: ""; width: 12px; height: 8px; border-radius: 6px 6px 2px 2px; background: #ffe1a6; }
+.obj-icon span { font-size: 10px; font-weight: 700; color: #fff; line-height: 1; text-shadow: 0 1px 2px rgba(0,0,0,.6); }
+.obj-icon.apm { border-color: #c084fc; background: rgba(147, 51, 234, 0.6); box-shadow: 0 0 14px 4px rgba(168, 85, 247, 0.55); }
 .obj-icon.soon { border-color: var(--red); box-shadow: 0 0 14px 4px rgba(229, 72, 77, 0.6); }
 @keyframes glow { 50% { box-shadow: 0 0 22px 8px rgba(245, 140, 20, 0.35); } }
 .pt-icon {
@@ -278,3 +279,13 @@ details summary { cursor: pointer; color: var(--muted); margin-bottom: 10px; }
   .chat, .chat-launch { left: 16px; bottom: 72px; }
   .chat { height: 60vh; }
 }
+
+/* ---------- picking a point on the map ---------- */
+/* Markers, lines and the marked area must not swallow the click. */
+.picking { cursor: crosshair !important; }
+.picking .leaflet-interactive, .picking .leaflet-marker-icon { pointer-events: none !important; }
+
+/* ---------- ammunition table ---------- */
+.ammo-table { margin-top: 10px; font-size: 12px; }
+.ammo-table th, .ammo-table td { padding: 4px 6px; text-align: right; white-space: nowrap; }
+.ammo-table th:first-child, .ammo-table td:first-child { text-align: left; color: var(--muted); }

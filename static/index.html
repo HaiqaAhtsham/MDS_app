@@ -14,13 +14,14 @@
     <img class="logo" src="/static/logo.png" alt="MDS">
     <button data-view="dashboard" class="active" title="Dashboard">
       <svg viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="8" height="10" rx="1.5"/><rect x="13" y="3" width="8" height="6" rx="1.5"/><rect x="13" y="11" width="8" height="10" rx="1.5"/><rect x="3" y="15" width="8" height="6" rx="1.5"/></svg>
-    </button> 
+    </button>
     <button data-view="users" class="admin-only hidden" title="Users">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5"/><path d="M16 4.8a3.5 3.5 0 0 1 0 6.4M18 14.8c1.8.8 3 2.6 3.5 5.2"/></svg>
     </button>
     <button data-view="detect" title="Drone video detection">
-      <svg viewBox="0 0 24 24" fill="none" stroke("currentColor", stroke-width("1.8", stroke-linejoin("round", "<path d=\"M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 
-
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/></svg>
+    </button>
+    <button data-view="docs" title="Documents">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/></svg>
     </button>
     <button data-view="settings" title="Settings">
@@ -57,7 +58,7 @@
           <div class="map-top">
             <form class="search" id="search">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-              <input id="search-q" placeholder="Grid ref (43S CT 123456) or lat, lng">
+              <input id="search-q" placeholder="Go to lat, lng (e.g. 33.6844, 73.0479)">
             </form>
             <div class="spacer"></div>
             <select id="route-filter" title="Route layers">
@@ -94,10 +95,17 @@
           </div>
 
           <div class="card">
-            <div class="card-h">Ammunition Status <button class="icon-btn" id="ammo-edit" title="Update fired canisters">Edit</button></div>
-            <div class="card-b stat-row">
-              <b id="ammo-total">288</b><div><div class="shells" id="shells-avail"></div><div class="small muted">Total canisters · available</div></div>
-              <b id="ammo-fired">0</b><div><div class="shells" id="shells-fired"></div><div class="small muted">Fired · expended</div></div>
+            <div class="card-h">Ammunition Status <button class="icon-btn" id="ammo-edit" title="Enter rockets in stock and loaded">Edit</button></div>
+            <div class="card-b">
+              <div class="stat-row">
+                <b id="ammo-total">0</b><div><div class="shells" id="shells-avail"></div><div class="small muted">Total rockets · loaded</div></div>
+                <b id="ammo-fired">0</b><div><div class="shells" id="shells-fired"></div><div class="small muted">Fired rockets · expended</div></div>
+              </div>
+              <table class="ammo-table">
+                <thead><tr><th></th><th>GBL-240</th><th>GBL-243</th></tr></thead>
+                <tbody id="ammo-rows"></tbody>
+              </table>
+              <p class="small muted" id="ammo-firing"></p>
             </div>
           </div>
 
@@ -111,12 +119,14 @@
                   <option value="24">24 hrs</option>
                   <option value="48">48 hrs</option>
                   <option value="72">72 hrs</option>
-                  <option value="custom">Custom (1–272 hrs)…</option>
+                  <option value="custom">Custom (hrs or mins)…</option>
                 </select>
               </div>
               <label class="check"><input type="checkbox" id="sd-apply"> Also apply to objects already marked</label>
               <div style="margin-top:12px">
-                <div class="kv"><span>Marked objects</span><span id="marker-count">0</span></div>
+                <div class="kv"><span>Marked ATM</span><span id="marker-count-atm">0</span></div>
+                <div class="kv"><span>Marked APM</span><span id="marker-count-apm">0</span></div>
+                <div class="kv"><span>Marked objects (total)</span><span id="marker-count">0</span></div>
                 <div class="kv"><span>Next removal</span><span id="next-expiry">–</span></div>
               </div>
               <div class="row" style="margin-top:10px">
@@ -137,7 +147,7 @@
               <div class="field"><label>Drone video (.mp4, .mov, …)</label><input type="file" name="video" accept="video/*,.mp4,.mov,.avi,.mkv" required></div>
               <div class="field"><label>Telemetry subtitle file (.srt) with GPS</label><input type="file" name="telemetry" accept=".srt"></div>
               <div class="row">
-                <div class="field"><label>Label</label><input name="label" value="object"></div>
+                <div class="field"><label>Marker type</label><select name="label"><option value="ATM">ATM</option><option value="APM">APM</option></select></div>
                 <div class="field"><label>Object size (m, optional)</label><input name="object_size_m" type="number" step="0.01" min="0.02" placeholder="e.g. 0.3"></div>
               </div>
               <details>
@@ -218,15 +228,6 @@
         <div class="page">
           <h2>Settings</h2>
           <div class="grid-2">
-          <form class="card card-b" id="grid-form">
-            <div class="label" style="margin-bottom:8px">Grid reference defaults (MGRS, WGS84)</div>
-            <p class="small muted">A six-figure GR is only unique inside one 100 km square. These are used when a GR is entered without them.</p>
-            <div class="row">
-              <div class="field"><label>Grid zone</label><input name="gzd" placeholder="43S" required></div>
-              <div class="field"><label>100 km square</label><input name="square" placeholder="CT" required></div>
-            </div>
-            <button class="btn primary">Save</button>
-          </form>
           <form class="card card-b admin-only hidden" id="tol-form">
             <div class="label" style="margin-bottom:8px">Laying speed tolerance</div>
             <p class="small muted">Warn the driver when the speed differs from the chart speed by more than this.</p>
@@ -248,23 +249,9 @@
 <dialog id="point-dialog" class="dlg">
   <form id="pt-form" method="dialog">
     <h3 id="pt-title">Start point</h3>
-    <div class="tabs">
-      <button type="button" class="btn sm" data-tab="gr">Grid reference</button>
-      <button type="button" class="btn sm" data-tab="ll">Latitude / longitude</button>
-    </div>
-    <div id="pt-gr">
-      <div class="row">
-        <div class="field"><label>Grid zone</label><input id="pt-gzd" placeholder="43S" maxlength="3"></div>
-        <div class="field"><label>100 km square</label><input id="pt-square" placeholder="CT" maxlength="2"></div>
-      </div>
-      <div class="field"><label>Grid reference (six-figure, or 8/10-figure)</label><input id="pt-gr-input" placeholder="123456" autocomplete="off"></div>
-      <label class="check"><input type="checkbox" id="pt-save-default"> Save zone and square as default</label>
-    </div>
-    <div id="pt-ll" class="hidden">
-      <div class="row">
-        <div class="field"><label>Latitude (decimal °)</label><input id="pt-lat" placeholder="33.684422" inputmode="decimal"></div>
-        <div class="field"><label>Longitude (decimal °)</label><input id="pt-lng" placeholder="73.047882" inputmode="decimal"></div>
-      </div>
+    <div class="row">
+      <div class="field"><label>Latitude (decimal °)</label><input id="pt-lat" placeholder="33.684422" inputmode="decimal"></div>
+      <div class="field"><label>Longitude (decimal °)</label><input id="pt-lng" placeholder="73.047882" inputmode="decimal"></div>
     </div>
     <p id="pt-error" class="warn small hidden"></p>
     <div class="dlg-actions">
@@ -293,6 +280,70 @@
       <span class="spacer"></span>
       <button type="button" class="btn" id="pm-cancel">Cancel</button>
       <button class="btn primary">Save parameters</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="marker-dialog" class="dlg">
+  <form id="mk-form" method="dialog">
+    <h3>Add marker</h3>
+    <div class="row">
+      <label class="check"><input type="radio" name="mk-kind" value="ATM" checked> ATM</label>
+      <label class="check"><input type="radio" name="mk-kind" value="APM"> APM</label>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <div class="field"><label>Latitude (decimal °)</label><input id="mk-lat" placeholder="33.684422" inputmode="decimal"></div>
+      <div class="field"><label>Longitude (decimal °)</label><input id="mk-lng" placeholder="73.047882" inputmode="decimal"></div>
+    </div>
+    <p id="mk-error" class="warn small hidden"></p>
+    <div class="dlg-actions">
+      <button type="button" class="btn" id="mk-pick">Pick on map</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn" id="mk-cancel">Cancel</button>
+      <button class="btn primary">Add marker</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="ammo-dialog" class="dlg">
+  <form id="am-form" method="dialog">
+    <h3>Ammunition</h3>
+    <div class="label">a. Total rockets</div>
+    <div class="row">
+      <div class="field"><label>GBL-240</label><input id="am-total-240" type="number" min="0" step="1" required></div>
+      <div class="field"><label>GBL-243</label><input id="am-total-243" type="number" min="0" step="1" required></div>
+    </div>
+    <div class="label">b. Total rockets loaded</div>
+    <div class="row">
+      <div class="field"><label>GBL-240</label><input id="am-loaded-240" type="number" min="0" step="1" required></div>
+      <div class="field"><label>GBL-243</label><input id="am-loaded-243" type="number" min="0" step="1" required></div>
+    </div>
+    <p class="small muted">GBL-240: 5 ATM each, fired for ATM-only minefields. GBL-243: 4 ATM + 3 APM each, fired for mixed minefields.
+      While laying, one rocket is counted as fired every time gap set in the minefield parameters. The launchers hold 288 in total.</p>
+    <p class="small" id="am-fired"></p>
+    <label class="check"><input type="checkbox" id="am-reset"> Reset fired count to 0</label>
+    <p id="am-error" class="warn small hidden"></p>
+    <div class="dlg-actions">
+      <span class="spacer"></span>
+      <button type="button" class="btn" id="am-cancel">Cancel</button>
+      <button class="btn primary">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="sd-dialog" class="dlg">
+  <form id="sd-form" method="dialog">
+    <h3>Custom self-destruct time</h3>
+    <div class="row">
+      <div class="field"><label>Time</label><input id="sd-value" type="number" min="1" step="1" required></div>
+      <div class="field"><label>Unit</label><select id="sd-unit"><option value="h">hrs</option><option value="m">mins</option></select></div>
+    </div>
+    <p class="small muted">From 1 minute up to 272 hrs.</p>
+    <p id="sd-error" class="warn small hidden"></p>
+    <div class="dlg-actions">
+      <span class="spacer"></span>
+      <button type="button" class="btn" id="sd-cancel">Cancel</button>
+      <button class="btn primary">Set</button>
     </div>
   </form>
 </dialog>

@@ -68,8 +68,16 @@ CREATE TABLE IF NOT EXISTS jobs (
 """
 
 
-# Mine-laying parameters chosen from the density-frontage chart.
-MISSION_COLUMNS = {"mine_type": "TEXT", "atm": "REAL", "apm": "REAL", "time_gap": "INTEGER"}
+# Mine-laying parameters chosen from the density-frontage chart, and the
+# time the next canister fires while laying.
+MISSION_COLUMNS = {
+    "mine_type": "TEXT", "atm": "REAL", "apm": "REAL", "time_gap": "INTEGER",
+    "fire_next_at": "REAL", "fire_stopped": "TEXT",
+}
+
+# Canister stock per type (handout p. 9: GBL-240 and GBL-243 are the two types in use).
+CANISTER_TYPES = ("GBL-240", "GBL-243")
+AMMO_KEYS = [f"ammo_{k}_{t[4:]}" for t in CANISTER_TYPES for k in ("total", "loaded", "fired")]
 
 
 def connect() -> sqlite3.Connection:
@@ -96,11 +104,10 @@ def init() -> None:
         c.executescript(SCHEMA)
         c.execute("INSERT OR IGNORE INTO mission (id) VALUES (1)")
         c.execute("INSERT OR IGNORE INTO settings VALUES ('sd_hours', ?)", (str(config.DEFAULT_SD_HOURS),))
-        c.execute("INSERT OR IGNORE INTO settings VALUES ('total_canisters', ?)", (str(config.TOTAL_CANISTERS),))
-        c.execute("INSERT OR IGNORE INTO settings VALUES ('fired_canisters', '0')")
+        for key in AMMO_KEYS:
+            c.execute("INSERT OR IGNORE INTO settings VALUES (?, '0')", (key,))
         c.execute("INSERT OR IGNORE INTO settings VALUES ('speed_tol_pct', '10')")
-        c.execute("INSERT OR IGNORE INTO settings VALUES ('grid_gzd', '')")
-        c.execute("INSERT OR IGNORE INTO settings VALUES ('grid_square', '')")
+        c.execute("DELETE FROM settings WHERE key IN ('grid_gzd', 'grid_square', 'total_canisters', 'fired_canisters')")
         # Columns added after the first release.
         have = {r["name"] for r in c.execute("PRAGMA table_info(mission)")}
         for col, decl in MISSION_COLUMNS.items():

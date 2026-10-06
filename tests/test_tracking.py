@@ -22,7 +22,6 @@ def test_mission_flow(client):
     assert r.status_code == 400 and "parameters" in r.json()["detail"]  # no mine parameters yet
     s = client.put("/api/tracking/params", json={"mine_type": "at", "atm": 0.5, "time_gap": 2}).json()
     assert s["params"]["frontage_m"] == 2880 and s["params"]["required_speed_kmh"] == 18
-    assert s["grid"]["start"] and s["grid"]["start"].startswith("43")
     a = from_local(*START, -300, -400)  # point A, 500 m from start
     client.post("/api/tracking/position", json={"lat": a[0], "lng": a[1]})
     s = client.post("/api/tracking/start").json()
@@ -61,3 +60,54 @@ def test_mission_flow(client):
 
 def test_distance_sanity():
     assert abs(haversine(*START, *END) - 1000) < 1
+
+
+def test_firing_one_canister_per_time_gap(client, monkeypatch):
+    from app import tracking
+
+    clock = [1_000_000.0]
+    monkeypatch.setattr(tracking.time, "time", lambda: clock[0])
+    client.put("/api/ammo", json={"total": {"GBL-240": 50, "GBL-243": 20},
+                                  "loaded": {"GBL-240": 3, "GBL-243": 10}})
+    client.post("/api/tracking/point", json={"which": "start", "lat": START[0], "lng": START[1]})
+    client.post("/api/tracking/point", json={"which": "end", "lat": END[0], "lng": END[1]})
+    client.put("/api/tracking/params", json={"mine_type": "at", "atm": 0.5, "time_gap": 2})
+    a = from_local(*START, -200, 0)
+    client.post("/api/tracking/position", json={"lat": a[0], "lng": a[1]})
+    client.post("/api/tracking/start")
+    s = client.get("/api/tracking").json()
+    assert s["ammo"]["fired"] == 0 and not s["firing"]["active"]  # nothing fired on the approach
+
+    # Passing the start point fires the first GBL-240 straight away.
+    s = client.post("/api/tracking/position", json={"lat": START[0], "lng": START[1]}).json()
+    assert s["status"] == "laying" and s["firing"]["active"] and s["firing"]["canister"] == "GBL-240"
+    assert s["ammo"]["types"]["GBL-240"]["fired"] == 1
+
+    clock[0] += 3.9  # 2 s gap -> one more
+    assert client.get("/api/tracking").json()["ammo"]["types"]["GBL-240"]["fired"] == 2
+
+    clock[0] += 10  # would be 5 more, but only 3 were loaded
+    s = client.get("/api/tracking").json()
+    t = s["ammo"]["types"]["GBL-240"]
+    assert (t["fired"], t["remaining"]) == (3, 0)
+    assert not s["firing"]["active"] and "GBL-240" in s["firing"]["stopped"]
+    assert s["ammo"]["types"]["GBL-243"]["fired"] == 0
+
+
+def test_mixed_field_fires_gbl243_and_stops_at_end(client, monkeypatch):
+    from app import tracking
+
+    clock = [2_000_000.0]
+    monkeypatch.setattr(tracking.time, "time", lambda: clock[0])
+    client.put("/api/ammo", json={"total": {"GBL-240": 0, "GBL-243": 100},
+                                  "loaded": {"GBL-240": 0, "GBL-243": 100}})
+    client.post("/api/tracking/point", json={"which": "start", "lat": START[0], "lng": START[1]})
+    client.post("/api/tracking/point", json={"which": "end", "lat": END[0], "lng": END[1]})
+    client.put("/api/tracking/params", json={"mine_type": "mixed", "atm": 0.4, "apm": 0.3, "time_gap": 5})
+    client.post("/api/tracking/position", json={"lat": START[0], "lng": START[1]})
+    client.post("/api/tracking/start")
+    clock[0] += 12  # fires at 0, 5, 10
+    s = client.post("/api/tracking/position", json={"lat": END[0], "lng": END[1]}).json()
+    assert s["status"] == "complete" and s["ammo"]["types"]["GBL-243"]["fired"] == 3
+    clock[0] += 60  # no more firing after the end point
+    assert client.get("/api/tracking").json()["ammo"]["types"]["GBL-243"]["fired"] == 3

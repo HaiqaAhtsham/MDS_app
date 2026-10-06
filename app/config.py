@@ -47,11 +47,12 @@ ONLINE_TILE_URL = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Im
 ARRIVAL_RADIUS_M = float(os.environ.get("MDS_ARRIVAL_RADIUS_M", "25"))
 OFF_ROUTE_M = float(os.environ.get("MDS_OFF_ROUTE_M", "50"))
 
-# MLCU self-destruction range from the handout: 1-272 hours.
-SD_MIN_HOURS = 1
+# Self-destruct time for marks. The handout gives 1-272 hours (MLCU) and
+# 4-56 minutes (portable setter); custom values down to 1 minute are allowed.
+SD_MIN_HOURS = 1 / 60
 SD_MAX_HOURS = 272
 DEFAULT_SD_HOURS = 48
-TOTAL_CANISTERS = 288
+CANISTERS_PER_SALVO = 288  # 8 scattering boxes x 36 (handout p. 8)
 
 
 def ensure_dirs() -> None:

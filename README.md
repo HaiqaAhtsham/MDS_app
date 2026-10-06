@@ -2,7 +2,7 @@
 
 Web dashboard for the GBL-131 Mine Dispensing System (MDS). It has four parts:
 
-1. **Laying missions and navigation.** You enter a start point and an end point as an MGRS grid reference or as latitude/longitude. You pick the mine type, density and time interval from the density-frontage chart; the app looks up the frontage and the required speed. **Start** then gives turn-by-turn directions from the vehicle to the start point, and along the strip it warns when the speed is outside tolerance. Position comes from the GPS of the device the app is opened on, and the app works offline.
+1. **Laying missions and navigation.** You enter a start point and an end point as latitude/longitude, or pick them on the map. You pick the mine type, density and time interval from the density-frontage chart; the app looks up the frontage and the required speed. **Start** then gives turn-by-turn directions from the vehicle to the start point, and along the strip it warns when the speed is outside tolerance. Position comes from the GPS of the device the app is opened on, and the app works offline.
 2. **Drone video detection.** You upload a drone video together with its `.srt` telemetry file. The app finds the object from your reference pictures in the video frames, works out each object's GPS position, and marks it on the map. The **self-destruct time** selector (1–272 h, the MLCU range) controls when marks are removed automatically.
 3. **RAG chatbot.** Answers questions about MDS from `MDS.pdf` and any other PDFs you add. Every answer cites page numbers.
 4. **Accounts.** There is one admin account. The admin can add, disable, reset and delete operator accounts.
@@ -59,11 +59,7 @@ Another way is a reverse proxy with a real certificate (nginx, Caddy).
 
 ### Laying mission: start point → parameters → end point → Start
 
-1. **Start point.** You can type the point in either of two ways:
-   - **Grid reference:** an MGRS reference on WGS84. A six-figure GR such as `123456` only works together with the grid zone (e.g. `43S`) and 100 km square (e.g. `CT`). Enter those once and tick *Save as default*, or set them under **Settings**. A full reference such as `43S CT 123456` also works, as do 8- and 10-figure references. A six-figure GR is accurate to 100 m: it refers to the south-west corner of its 100 m square.
-   - **Latitude / longitude:** decimal degrees.
-
-   Bad input is rejected with a message. **Pick on map** lets you click the point instead.
+1. **Start point.** Type the latitude and longitude in decimal degrees. Bad input is rejected with a message. **Pick on map** lets you click the point instead.
 2. **Mine parameters.** This dialog opens by itself after the start point is set.
    - *Anti-tank only:* choose one of the chart's AT densities.
    - *Mixed:* choose an ATM density. The chart pairs every ATM density with exactly one APM density, so the APM box shows that pair.
@@ -103,7 +99,7 @@ The app flags these chart values (they are still the values used):
    - **Object size (m):** makes matching faster and more accurate.
    - **Min. frames per object:** set it to 2 or more to ignore one-frame false hits.
    - **Camera HFOV:** the camera's horizontal field of view. The default of 73.7° fits many DJI cameras; check yours.
-3. Each object that is found becomes one orange marker. Hits of the same object across frames are merged within 3 m. A marker's popup shows the matched image crop, the match score and the self-destruct countdown. When there are three or more markers, a red dashed perimeter with its corner coordinates is drawn around them.
+3. Choose the **marker type** (ATM or APM) before uploading. Each object that is found becomes one marker of that type. Hits of the same object across frames are merged within 3 m. A marker's popup shows the matched image crop, the match score and the self-destruct countdown. When there are three or more markers, a red dashed perimeter with its corner coordinates is drawn around them.
 
 About the `.srt` files: they are **not training data**. DJI drones write the GPS position, altitude and heading for every frame into that subtitle file, and the app uses them to turn a pixel in the frame into a latitude and longitude. The calculation assumes the camera points straight down (gimbal pitch −90°). Oblique footage will place markers less accurately.
 
@@ -117,9 +113,24 @@ yolo detect train data=dataset.yaml model=yolov8n.pt imgsz=1280 epochs=100
 cp runs/detect/train/weights/best.pt models/detector.pt   # the app uses it automatically
 ```
 
+### Markers by hand
+
+**Add marker** opens a dialog for the marker type (ATM or APM) and its latitude/longitude. **Pick on map** lets you click the spot instead; the dialog then reopens with the coordinates filled in. You can pick anywhere, including inside the red marked area. The Control Module shows how many ATM and APM markers are on the map.
+
+### Ammunition
+
+**Edit** on the Ammunition Status card asks for:
+
+- **Total rockets:** GBL-240 and GBL-243 in stock;
+- **Total rockets loaded:** GBL-240 and GBL-243 in the launchers. Loaded can't exceed the total, and the launchers hold 288 in all.
+
+The handout (p. 27) gives the contents: GBL-240 holds 5 ATM and is used for ATM-only minefields; GBL-243 holds 4 ATM + 3 APM and is used for mixed minefields.
+
+While the vehicle lays the strip, the app counts one rocket of that type as fired every **time gap** set in the minefield parameters. Counting starts when the vehicle reaches the start point and stops at the end point, or when that type's loaded rockets run out. Counting is by time, so it keeps going if the GPS drops out mid-strip. The dialog can reset the fired count.
+
 ### Self-destruct time
 
-The **Set self-destruct time** dropdown in the Control Module applies to new marks. If you tick **Also apply to objects already marked**, existing marks are re-timed to *marked time + new value*. Anything older than that is removed at once. Expired marks disappear from every open dashboard within a second and are deleted from the database within a minute.
+The **Set self-destruct time** dropdown in the Control Module applies to new marks. **Custom** asks for a time in hrs or mins, from 1 minute up to 272 hrs. If you tick **Also apply to objects already marked**, existing marks are re-timed to *marked time + new value*. Anything older than that is removed at once. Expired marks disappear from every open dashboard within a second and are deleted from the database within a minute.
 
 ### Chatbot
 
@@ -154,7 +165,7 @@ For `claude` mode, set `ANTHROPIC_API_KEY`. `MDS_CLAUDE_MODEL` defaults to `clau
 app/main.py        HTTP API + static files
 app/tracking.py    mission state machine and progress
 app/density.py     density-frontage chart (Annexure A) and lookups
-app/mgrs.py        MGRS / UTM grid references (WGS84)
+app/ammo.py        canister stock and automatic firing count
 app/routing.py     OSRM client, turn-by-turn text, straight-line fallback
 app/geo.py         distance / projection helpers
 app/srt.py         DJI .srt telemetry parser

@@ -14,9 +14,11 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
-from . import auth, config, db, density, detection, mgrs, rag, routing, tracking
+from . import ammo, auth, config, db, density, detection, rag, routing, tracking
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("mds")
@@ -251,7 +253,7 @@ def post_position(body: PositionIn, user=User):
     return tracking.record_position(body.lat, body.lng, body.accuracy, body.heading, body.speed, user["id"])
 
 
-# ------------------------------------------------------ density / grid / route
+# ------------------------------------------------------ density / route
 
 
 @app.get("/api/density")
@@ -264,20 +266,6 @@ def density_calc(body: ParamsIn, user=User):
     try:
         return density.calculate(body.mine_type, body.time_gap, body.atm, body.apm)
     except density.SelectionError as e:
-        raise HTTPException(400, str(e))
-
-
-class GridIn(BaseModel):
-    text: str = Field(max_length=40)
-    gzd: str | None = None
-    square: str | None = None
-
-
-@app.post("/api/grid/parse")
-def grid_parse(body: GridIn, user=User):
-    try:
-        return mgrs.parse(body.text, body.gzd or db.get_setting("grid_gzd"), body.square or db.get_setting("grid_square"))
-    except mgrs.GridError as e:
         raise HTTPException(400, str(e))
 
 
@@ -349,10 +337,13 @@ def tile(z: int, x: int, y: int, user=User):
 # --------------------------------------------------------------- markers
 
 
+MarkerKind = Literal["ATM", "APM"]
+
+
 class MarkerIn(BaseModel):
     lat: float
     lng: float
-    label: str = "object"
+    kind: MarkerKind
 
 
 def _markers():
@@ -374,7 +365,7 @@ def add_marker(body: MarkerIn, user=User):
     with db.tx() as c:
         cur = c.execute(
             "INSERT INTO markers (lat, lng, label, source, created_at, expires_at, created_by) VALUES (?, ?, ?, 'manual', ?, ?, ?)",
-            (body.lat, body.lng, body.label[:40] or "object", now, now + sd * 3600, user["id"]),
+            (body.lat, body.lng, body.kind, now, now + sd * 3600, user["id"]),
         )
     return {"id": cur.lastrowid}
 
@@ -412,8 +403,9 @@ class SdIn(BaseModel):
 
 
 class AmmoIn(BaseModel):
-    fired: int = Field(ge=0)
-    total: int | None = Field(default=None, ge=1)
+    total: dict[str, int]  # {"GBL-240": n, "GBL-243": n}
+    loaded: dict[str, int]
+    reset_fired: bool = False
 
 
 def _settings():
@@ -421,12 +413,8 @@ def _settings():
         "sd_hours": float(db.get_setting("sd_hours")),
         "sd_min": config.SD_MIN_HOURS,
         "sd_max": config.SD_MAX_HOURS,
-        "total_canisters": int(db.get_setting("total_canisters")),
-        "fired_canisters": int(db.get_setting("fired_canisters")),
         "rag_mode": config.RAG_MODE,
         "speed_tol_pct": float(db.get_setting("speed_tol_pct", "10")),
-        "grid_gzd": db.get_setting("grid_gzd", ""),
-        "grid_square": db.get_setting("grid_square", ""),
     }
 
 
@@ -446,24 +434,8 @@ def set_sd(body: SdIn, user=User):
     return _settings()
 
 
-class GridDefaultsIn(BaseModel):
-    gzd: str
-    square: str
-
-
 class ToleranceIn(BaseModel):
     pct: float = Field(gt=0, le=100)
-
-
-@app.put("/api/settings/grid")
-def set_grid_defaults(body: GridDefaultsIn, user=User):
-    try:
-        mgrs.from_mgrs(body.gzd, body.square, "00")  # validates zone, band and square
-    except mgrs.GridError as e:
-        raise HTTPException(400, str(e))
-    db.set_setting("grid_gzd", body.gzd.strip().upper().replace(" ", ""))
-    db.set_setting("grid_square", body.square.strip().upper().replace(" ", ""))
-    return _settings()
 
 
 @app.put("/api/settings/speed-tolerance")
@@ -472,14 +444,21 @@ def set_speed_tolerance(body: ToleranceIn, admin=Admin):
     return _settings()
 
 
-@app.put("/api/settings/ammo")
+@app.get("/api/ammo")
+def get_ammo(user=User):
+    with db.tx() as c:
+        return ammo.read(c)
+
+
+@app.put("/api/ammo")
 def set_ammo(body: AmmoIn, user=User):
-    total = body.total or int(db.get_setting("total_canisters"))
-    if body.fired > total:
-        raise HTTPException(400, "Fired can't exceed total")
-    db.set_setting("total_canisters", total)
-    db.set_setting("fired_canisters", body.fired)
-    return _settings()
+    try:
+        total = {t: int(body.total.get(t, 0)) for t in db.CANISTER_TYPES}
+        loaded = {t: int(body.loaded.get(t, 0)) for t in db.CANISTER_TYPES}
+        with db.tx() as c:
+            return ammo.update(c, total, loaded, body.reset_fired)
+    except ammo.AmmoError as e:
+        raise HTTPException(400, str(e))
 
 
 # ------------------------------------------------------------- detection
@@ -510,7 +489,7 @@ def upload_video(
     altitude_m: float | None = Form(None),
     lat: float | None = Form(None),
     lng: float | None = Form(None),
-    label: str = Form("object"),
+    label: MarkerKind = Form("ATM"),
     user=User,
 ):
     if not (0.05 <= sample_every_s <= 30 and 10 <= hfov_deg <= 170 and 0.3 <= threshold <= 0.99):
@@ -520,7 +499,7 @@ def upload_video(
     opts = detection.Options(
         sample_every_s=sample_every_s, hfov_deg=hfov_deg, threshold=threshold,
         object_size_m=object_size_m or None, min_hits=max(1, min_hits), altitude_m=altitude_m,
-        lat=lat, lng=lng, label=(label or "object")[:40],
+        lat=lat, lng=lng, label=label,
     )
     job_id = detection.create_job(video.filename, user["id"])
     _jobs.submit(detection.run_job, job_id, video_path, srt_path, opts, user["id"])
