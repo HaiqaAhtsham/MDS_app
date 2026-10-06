@@ -9,11 +9,13 @@ The mission has two legs:
 Progress on the strip is the vehicle's GPS fix projected onto the
 start->end line. We keep the furthest projection reached so far
 ("covered"), so GPS jitter does not make the ring go backwards.
+
+While laying, canisters are counted as fired once per time gap (see ammo.py).
 """
 
 import time
 
-from . import config, db, density, mgrs
+from . import ammo, config, db, density
 from .geo import haversine, project_on_segment
 
 TRAIL_LIMIT = 500
@@ -44,7 +46,8 @@ def set_point(which: str, lat: float, lng: float) -> None:
     with db.tx() as c:
         c.execute(
             f"""UPDATE mission SET {col}_lat = ?, {col}_lng = ?, origin_lat = NULL, origin_lng = NULL,
-                reached_start = 0, max_progress = 0, started_at = NULL WHERE id = 1""",
+                reached_start = 0, max_progress = 0, started_at = NULL, fire_next_at = NULL,
+                fire_stopped = NULL WHERE id = 1""",
             (lat, lng),
         )
         # Separate statement: SET expressions see the row as it was before the update.
@@ -84,7 +87,8 @@ def start_mission() -> dict:
         origin = (pos["lat"], pos["lng"]) if pos and time.time() - pos["ts"] < 300 else (None, None)
         c.execute(
             """UPDATE mission SET status = 'approach', origin_lat = ?, origin_lng = ?,
-               reached_start = 0, max_progress = 0, started_at = ? WHERE id = 1""",
+               reached_start = 0, max_progress = 0, started_at = ?, fire_next_at = NULL,
+               fire_stopped = NULL WHERE id = 1""",
             (*origin, time.time()),
         )
         if origin[0] is not None:
@@ -98,7 +102,7 @@ def reset_mission() -> None:
             """UPDATE mission SET start_lat = NULL, start_lng = NULL, end_lat = NULL, end_lng = NULL,
                origin_lat = NULL, origin_lng = NULL, reached_start = 0, max_progress = 0,
                status = 'idle', started_at = NULL, mine_type = NULL, atm = NULL, apm = NULL,
-               time_gap = NULL WHERE id = 1"""
+               time_gap = NULL, fire_next_at = NULL, fire_stopped = NULL WHERE id = 1"""
         )
         c.execute("DELETE FROM positions")
 
@@ -122,27 +126,32 @@ def _advance(c, lat: float, lng: float) -> None:
         c.execute("UPDATE mission SET origin_lat = ?, origin_lng = ? WHERE id = 1", (lat, lng))
     start, end = (m["start_lat"], m["start_lng"]), (m["end_lat"], m["end_lng"])
 
-    reached = bool(m["reached_start"])
-    if not reached and haversine(lat, lng, *start) <= config.ARRIVAL_RADIUS_M:
-        reached = True
-    if not reached:
-        c.execute("UPDATE mission SET status = 'approach' WHERE id = 1")
-        return
+    now = time.time()
+    if not m["reached_start"]:
+        if haversine(lat, lng, *start) > config.ARRIVAL_RADIUS_M:
+            c.execute("UPDATE mission SET status = 'approach' WHERE id = 1")
+            return
+        # Passing the start point switches firing on: first canister now.
+        c.execute(
+            "UPDATE mission SET reached_start = 1, status = 'laying', fire_next_at = ?, fire_stopped = NULL WHERE id = 1",
+            (now,),
+        )
+    ammo.fire(c, _mission(c), now)
 
     frac, _, _ = project_on_segment(start, end, (lat, lng))
     covered = max(m["max_progress"], frac)
-    status = "laying"
     if haversine(lat, lng, *end) <= config.ARRIVAL_RADIUS_M:
-        covered, status = 1.0, "complete"
-    c.execute(
-        "UPDATE mission SET reached_start = 1, max_progress = ?, status = ? WHERE id = 1",
-        (covered, status),
-    )
+        # End point: firing switches off.
+        c.execute("UPDATE mission SET max_progress = 1.0, status = 'complete', fire_next_at = NULL WHERE id = 1")
+    else:
+        c.execute("UPDATE mission SET max_progress = ?, status = 'laying' WHERE id = 1", (covered,))
 
 
 def state() -> dict:
     with db.tx() as c:
+        ammo.fire(c, _mission(c), time.time())  # firing continues between GPS fixes
         m = _mission(c)
+        stock = ammo.read(c)
         pos = _latest(c)
         since = m["started_at"] or 0
         trail = [
@@ -162,12 +171,16 @@ def state() -> dict:
         "trail": trail,
         "covered": round(m["max_progress"], 4),
         "params": _params(m),
+        "ammo": stock,
+        "firing": {
+            "active": m["status"] == "laying" and m["fire_next_at"] is not None,
+            "canister": ammo.CANISTER_FOR.get(m["mine_type"]),
+            "stopped": m["fire_stopped"],
+        },
         "strip_length_m": None,
         "approach": None,
         "strip": None,
     }
-    out["grid"] = {k: _gr(out[k]) for k in ("start", "end")}
-    out["grid"]["vehicle"] = _gr([pos["lat"], pos["lng"]]) if pos else None
     if not out["start"] or not out["end"]:
         return out
     start, end = tuple(out["start"]), tuple(out["end"])
@@ -195,12 +208,3 @@ def state() -> dict:
     }
     return out
 
-
-def _gr(p) -> str | None:
-    """Six-figure MGRS grid reference for display."""
-    if not p:
-        return None
-    try:
-        return mgrs.to_mgrs(p[0], p[1], digits=6)
-    except mgrs.GridError:
-        return None

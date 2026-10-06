@@ -127,32 +127,38 @@ $("#route-filter").addEventListener("change", (e) => {
   }
 });
 
-// Search box: "lat, lng" or an MGRS grid reference (works offline).
-$("#search").addEventListener("submit", async (e) => {
+// Search box: "lat, lng" (works offline).
+$("#search").addEventListener("submit", (e) => {
   e.preventDefault();
-  const q = $("#search-q").value.trim();
-  if (!q) return;
-  const m = q.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
-  if (m) { map.setView([+m[1], +m[2]], 17); return; }
-  try {
-    const r = await api("/api/grid/parse", { method: "POST", json: { text: q } });
-    map.setView([r.lat, r.lng], 17);
-  } catch (err) {
-    toast(`Enter "lat, lng" or a grid reference. ${err.message}`, true);
-  }
+  const p = parseLatLng(...$("#search-q").value.split(","));
+  if (typeof p === "string") return toast(`Enter "lat, lng", e.g. 33.6844, 73.0479. ${p}`, true);
+  map.setView(p, 17);
 });
+
+// Returns [lat, lng] or an error message.
+function parseLatLng(latS = "", lngS = "") {
+  latS = String(latS).trim(); lngS = String(lngS).trim();
+  const num = /^-?\d+(\.\d+)?$/;
+  if (!num.test(latS) || !num.test(lngS)) return "Latitude and longitude must be decimal degrees, e.g. 33.684422 and 73.047882";
+  const lat = +latS, lng = +lngS;
+  if (lat < -90 || lat > 90) return "Latitude must be between -90 and 90";
+  if (lng < -180 || lng > 180) return "Longitude must be between -180 and 180";
+  return [lat, lng];
+}
+
+const fmtLL = (p) => (p ? `${p[0].toFixed(6)}, ${p[1].toFixed(6)}` : "–");
 
 // ------------------------------------------------------------ mission: points
 
 function setPick(mode) {
   state.pick = state.pick === mode ? null : mode;
-  $("#btn-mark").classList.toggle("on", state.pick === "marker");
-  const hint = { start: "Click the map to place the START point", end: "Click the map to place the END point", marker: "Click the map to mark an object" }[state.pick];
+  const hint = { start: "Click the map to place the START point", end: "Click the map to place the END point", marker: "Click the map to place the marker" }[state.pick];
   $("#map-hint").textContent = hint || "";
   $("#map-hint").classList.toggle("hidden", !hint);
-  map.getContainer().style.cursor = state.pick ? "crosshair" : "";
+  // While picking, markers, lines and the marked area must not catch the click.
+  map.getContainer().classList.toggle("picking", !!state.pick);
 }
-$("#btn-mark").addEventListener("click", () => setPick("marker"));
+$("#btn-mark").addEventListener("click", () => openMarkerDialog());
 $("#btn-set-start").addEventListener("click", () => openPointDialog("start"));
 $("#btn-set-end").addEventListener("click", () => openPointDialog("end"));
 $("#btn-params").addEventListener("click", () => openParamsDialog());
@@ -162,10 +168,7 @@ map.on("click", async (e) => {
   const mode = state.pick;
   setPick(null);
   const p = [e.latlng.lat, e.latlng.lng];
-  if (mode === "marker") {
-    await api("/api/markers", { method: "POST", json: { lat: p[0], lng: p[1], label: "object" } }).catch((err) => toast(err.message, true));
-    return loadMarkers();
-  }
+  if (mode === "marker") return openMarkerDialog(p);
   await savePoint(mode, p[0], p[1]);
 });
 
@@ -186,33 +189,19 @@ async function savePoint(which, lat, lng) {
 const pointDlg = $("#point-dialog");
 let pointWhich = "start";
 
-function setPointTab(tab) {
-  $$("#point-dialog [data-tab]").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
-  $("#pt-gr").classList.toggle("hidden", tab !== "gr");
-  $("#pt-ll").classList.toggle("hidden", tab !== "ll");
-  pointDlg.dataset.tab = tab;
-}
-$$("#point-dialog [data-tab]").forEach((b) => b.addEventListener("click", () => setPointTab(b.dataset.tab)));
-
 function openPointDialog(which) {
   pointWhich = which;
   $("#pt-title").textContent = which === "start" ? "Start point" : "End point";
   $("#pt-error").classList.add("hidden");
-  const s = state.settings;
-  $("#pt-gzd").value = s.grid_gzd || "";
-  $("#pt-square").value = s.grid_square || "";
-  $("#pt-save-default").checked = !s.grid_gzd;
   const cur = state.tracking?.[which];
-  $("#pt-gr-input").value = "";
   $("#pt-lat").value = cur ? cur[0].toFixed(6) : "";
   $("#pt-lng").value = cur ? cur[1].toFixed(6) : "";
-  setPointTab(pointDlg.dataset.tab || "gr");
   pointDlg.showModal();
 }
 
-function pointError(msg) {
-  $("#pt-error").textContent = msg;
-  $("#pt-error").classList.remove("hidden");
+function showError(id, msg) {
+  $(id).textContent = msg;
+  $(id).classList.remove("hidden");
 }
 
 $("#pt-cancel").addEventListener("click", () => pointDlg.close());
@@ -220,27 +209,41 @@ $("#pt-pick").addEventListener("click", () => { pointDlg.close(); setPick(pointW
 
 $("#pt-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  let lat, lng;
-  if (pointDlg.dataset.tab === "gr") {
-    const gzd = $("#pt-gzd").value.trim(), square = $("#pt-square").value.trim(), text = $("#pt-gr-input").value.trim();
-    if (!text) return pointError("Enter a grid reference, e.g. 123456");
-    try {
-      const r = await api("/api/grid/parse", { method: "POST", json: { text, gzd, square } });
-      ({ lat, lng } = r);
-      if ($("#pt-save-default").checked && gzd && square) {
-        renderSettings(await api("/api/settings/grid", { method: "PUT", json: { gzd, square } }));
-      }
-    } catch (err) { return pointError(err.message); }
-  } else {
-    const latS = $("#pt-lat").value.trim(), lngS = $("#pt-lng").value.trim();
-    const num = /^-?\d+(\.\d+)?$/;
-    if (!num.test(latS) || !num.test(lngS)) return pointError("Latitude and longitude must be decimal degrees, e.g. 33.684422 and 73.047882");
-    lat = +latS; lng = +lngS;
-    if (lat < -90 || lat > 90) return pointError("Latitude must be between -90 and 90");
-    if (lng < -180 || lng > 180) return pointError("Longitude must be between -180 and 180");
-  }
+  const p = parseLatLng($("#pt-lat").value, $("#pt-lng").value);
+  if (typeof p === "string") return showError("#pt-error", p);
   pointDlg.close();
-  await savePoint(pointWhich, lat, lng);
+  await savePoint(pointWhich, p[0], p[1]);
+});
+
+// ------------------------------------------------------------ markers: add dialog
+
+const markerDlg = $("#marker-dialog");
+
+function openMarkerDialog(p) {
+  $("#mk-error").classList.add("hidden");
+  if (p) {
+    $("#mk-lat").value = p[0].toFixed(6);
+    $("#mk-lng").value = p[1].toFixed(6);
+  } else {
+    $("#mk-lat").value = $("#mk-lng").value = "";
+  }
+  markerDlg.showModal();
+}
+
+$("#mk-cancel").addEventListener("click", () => markerDlg.close());
+$("#mk-pick").addEventListener("click", () => { markerDlg.close(); setPick("marker"); });
+
+$("#mk-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const p = parseLatLng($("#mk-lat").value, $("#mk-lng").value);
+  if (typeof p === "string") return showError("#mk-error", p);
+  const kind = $('input[name="mk-kind"]:checked').value;
+  try {
+    await api("/api/markers", { method: "POST", json: { lat: p[0], lng: p[1], kind } });
+    markerDlg.close();
+    toast(`${kind} marker added`);
+    loadMarkers();
+  } catch (err) { showError("#mk-error", err.message); }
 });
 
 // ------------------------------------------------------------ mission: mine parameters
@@ -262,7 +265,7 @@ async function openParamsDialog() {
 function fillDensityOptions(p) {
   const mixed = $("#pm-type-mixed").checked;
   const atm = mixed ? densityTable.mixed.map((x) => x.atm) : densityTable.anti_tank;
-  $("#pm-atm-label").textContent = mixed ? "ATM density" : "Anti-tank (ATM) density";
+  $("#pm-atm-label").textContent = "ATM density";
   $("#pm-atm").innerHTML = atm.map((v) => `<option value="${v}">${v}</option>`).join("");
   if (p && p.mine_type === (mixed ? "mixed" : "at")) $("#pm-atm").value = String(p.atm);
   $("#pm-apm-field").classList.toggle("hidden", !mixed);
@@ -667,15 +670,15 @@ function renderTracking(t) {
     L.polyline([t.start, t.end], { color: "#4c8dff", weight: 5, opacity: 0.45 }).addTo(strip);
     if (covered > 0) L.polyline([t.start, mid], { color: "#4c8dff", weight: 5 }).addTo(strip);
   }
-  if (t.start) L.marker(t.start, { icon: startIcon }).bindTooltip(`Start · ${t.grid?.start || ""}`).addTo(strip);
-  if (t.end) L.marker(t.end, { icon: endIcon }).bindTooltip(`End · ${t.grid?.end || ""}`).addTo(strip);
+  if (t.start) L.marker(t.start, { icon: startIcon }).bindTooltip(`Start point · ${fmtLL(t.start)}`).addTo(strip);
+  if (t.end) L.marker(t.end, { icon: endIcon }).bindTooltip(`End point · ${fmtLL(t.end)}`).addTo(strip);
 
   const v = t.vehicle;
   if (v) {
     const here = [v.lat, v.lng];
     if (t.trail.length > 1) L.polyline(t.trail, { color: "#f5a524", weight: 2, opacity: 0.8 }).addTo(layers.vehicle);
     if (v.accuracy) L.circle(here, { radius: v.accuracy, color: "#f5a524", weight: 1, fillOpacity: 0.06 }).addTo(layers.vehicle);
-    L.marker(here, { icon: vehicleIcon, zIndexOffset: 1000 }).bindTooltip(`${t.grid?.vehicle || ""} · ${new Date(v.ts * 1000).toLocaleTimeString()}`).addTo(layers.vehicle);
+    L.marker(here, { icon: vehicleIcon, zIndexOffset: 1000 }).bindTooltip(`${fmtLL(here)} · ${new Date(v.ts * 1000).toLocaleTimeString()}`).addTo(layers.vehicle);
     if (t.start && (t.status === "approach" || t.status === "planned")) {
       if (nav.route && nav.routeTo === t.start.join(",")) {
         L.polyline(nav.route.geometry, { color: "#1b1c18", weight: 8, opacity: 0.7 }).addTo(approach);
@@ -698,14 +701,14 @@ function renderTracking(t) {
   $("#phase-text").textContent = text;
 
   const rows = [];
-  if (t.grid?.start) rows.push(["Start GR", t.grid.start]);
-  if (t.grid?.end) rows.push(["End GR", t.grid.end]);
+  if (t.start) rows.push(["Start Point", fmtLL(t.start)]);
+  if (t.end) rows.push(["End Point", fmtLL(t.end)]);
   if (t.strip_length_m != null) rows.push(["Strip length", fmtM(t.strip_length_m)]);
   const p = t.params;
   if (p) {
-    rows.push(["Mine type", p.mine_type === "mixed" ? `Mixed (ATM ${p.atm} / APM ${p.apm})` : `Anti-tank ${p.atm}`]);
+    rows.push(["Mine type", p.mine_type === "mixed" ? `Mixed (ATM ${p.atm} / APM ${p.apm})` : `ATM only (${p.atm})`]);
     rows.push(["Time gap · speed", `${p.time_gap_s} s · ${p.required_speed_kmh} km/h`]);
-    rows.push(["Chart frontage", `${p.frontage_m} m`]);
+    rows.push(["Frontage", `${p.frontage_m} m`]);
     if (p.flags.length) rows.push(["Chart check", "⚠ see parameters", true]);
   }
   if (t.approach && t.status === "approach") rows.push(["To start (direct)", fmtM(t.approach.distance_to_start_m)]);
@@ -714,6 +717,7 @@ function renderTracking(t) {
     rows.push(["Off centreline", `${fmtM(t.strip.cross_track_m)}${t.strip.off_route ? " ⚠" : ""}`, t.strip.off_route]);
   }
   if (v) rows.push(["Last fix", `${Math.max(0, Math.round(Date.now() / 1000 + state.serverOffset - v.ts))} s ago`]);
+  if (t.ammo) renderAmmo(t.ammo, t.firing);
   $("#track-stats").innerHTML = rows.map(([k, val, warn]) => `<div class="kv"><span>${k}</span><span class="${warn ? "warn" : ""}">${val}</span></div>`).join("");
   updateNav(t);
 }
@@ -737,7 +741,7 @@ async function loadMarkers() {
 
 function markerPopup(m) {
   const left = m.expires_at - nowServer();
-  return `<b>${esc(m.label)}</b> #${m.id}<br>
+  return `<b>${esc(m.label)}</b> marker #${m.id}<br>
     <span class="muted">${m.lat.toFixed(6)}, ${m.lng.toFixed(6)}</span><br>
     ${m.score != null ? `Match ${(m.score * 100).toFixed(0)}% · seen in ${m.hits} frame(s)<br>` : ""}
     Source: ${esc(m.source || "–")}<br>
@@ -760,7 +764,8 @@ function renderMarkers() {
   const live = state.markers.filter((m) => m.expires_at > now);
   for (const m of live) {
     const soon = m.expires_at - now < 3600;
-    const icon = L.divIcon({ className: "", html: `<div class="obj-icon${soon ? " soon" : ""}"></div>`, iconSize: [30, 30], iconAnchor: [15, 15] });
+    const kind = m.label === "APM" ? "apm" : "atm";
+    const icon = L.divIcon({ className: "", html: `<div class="obj-icon ${kind}${soon ? " soon" : ""}"><span>${m.label === "APM" ? "AP" : "AT"}</span></div>`, iconSize: [30, 30], iconAnchor: [15, 15] });
     L.marker([m.lat, m.lng], { icon }).bindPopup(() => markerPopup(m)).addTo(layers.objects);
   }
   // Perimeter of the marked area: convex hull of the objects.
@@ -772,6 +777,8 @@ function renderMarkers() {
       .addTo(layers.field);
   }
   $("#marker-count").textContent = live.length;
+  $("#marker-count-atm").textContent = live.filter((m) => m.label === "ATM").length;
+  $("#marker-count-apm").textContent = live.filter((m) => m.label === "APM").length;
   const next = live.reduce((a, m) => Math.min(a, m.expires_at), Infinity);
   $("#next-expiry").textContent = Number.isFinite(next) ? fmtCountdown(next - now) : "–";
   state.liveCount = live.length;
@@ -812,57 +819,117 @@ $("#btn-clear-markers").addEventListener("click", async () => {
 
 // ------------------------------------------------------------ settings / ammo / SD
 
+function fmtSd(hours) {
+  const mins = Math.round(hours * 60);
+  if (mins % 60 === 0) return `${mins / 60} hrs`;
+  return mins < 60 ? `${mins} mins` : `${Math.floor(mins / 60)} hrs ${mins % 60} mins`;
+}
+
 function renderSettings(s) {
   state.settings = s;
   const sel = $("#sd-select");
   const val = String(+s.sd_hours);
   if (![...sel.options].some((o) => o.value === val)) {
-    const o = new Option(`${val}h`, val);
+    const o = new Option(fmtSd(+s.sd_hours), val);
     sel.insertBefore(o, sel.querySelector('[value="custom"]'));
   }
   sel.value = val;
   sel.dataset.current = val;
-
-  $("#grid-form [name=gzd]").value = s.grid_gzd;
-  $("#grid-form [name=square]").value = s.grid_square;
   if (document.activeElement?.name !== "pct") $("#tol-form [name=pct]").value = s.speed_tol_pct;
-
-  const total = s.total_canisters, fired = s.fired_canisters;
-  $("#ammo-total").textContent = total;
-  $("#ammo-fired").textContent = fired;
-  const shells = (n, cls) => Array.from({ length: 6 }, (_, i) => `<i class="${i < n ? cls : ""}"></i>`).join("");
-  $("#shells-avail").innerHTML = shells(Math.round((6 * (total - fired)) / total), "full");
-  $("#shells-fired").innerHTML = shells(Math.round((6 * fired) / total), "spent");
 }
 
-$("#sd-select").addEventListener("change", async (e) => {
-  const sel = e.target;
-  let hours = sel.value;
-  if (hours === "custom") {
-    hours = prompt(`Self-destruct time in hours (${state.settings.sd_min}–${state.settings.sd_max}):`, sel.dataset.current);
-    if (hours === null) { sel.value = sel.dataset.current; return; }
+async function setSd(hours) {
+  const sel = $("#sd-select");
+  const apply = $("#sd-apply").checked;
+  if (apply && !confirm(`Set the self-destruct time of all marked objects to ${fmtSd(hours)} after they were marked? Objects older than that will be removed.`)) {
+    sel.value = sel.dataset.current;
+    return false;
   }
   try {
-    const apply = $("#sd-apply").checked;
-    if (apply && !confirm(`Set self-destruct time of all marked objects to ${hours}h after they were marked? Objects older than that will be removed.`)) {
-      sel.value = sel.dataset.current;
-      return;
-    }
-    renderSettings(await api("/api/settings/sd", { method: "PUT", json: { hours: +hours, apply_to_existing: apply } }));
-    toast(`Self-destruct time set to ${hours}h${apply ? " for all marked objects" : " for new detections"}`);
+    renderSettings(await api("/api/settings/sd", { method: "PUT", json: { hours, apply_to_existing: apply } }));
+    toast(`Self-destruct time set to ${fmtSd(hours)}${apply ? " for all marked objects" : " for new marks"}`);
     loadMarkers();
+    return true;
   } catch (err) {
     sel.value = sel.dataset.current;
     toast(err.message, true);
+    return false;
   }
+}
+
+$("#sd-select").addEventListener("change", (e) => {
+  if (e.target.value !== "custom") return setSd(+e.target.value);
+  const h = +e.target.dataset.current;
+  const whole = Number.isInteger(h);
+  $("#sd-value").value = whole ? h : Math.round(h * 60);
+  $("#sd-unit").value = whole ? "h" : "m";
+  $("#sd-error").classList.add("hidden");
+  $("#sd-dialog").showModal();
 });
 
+$("#sd-cancel").addEventListener("click", () => {
+  $("#sd-dialog").close();
+  $("#sd-select").value = $("#sd-select").dataset.current;
+});
+
+$("#sd-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const v = +$("#sd-value").value;
+  const hours = $("#sd-unit").value === "h" ? v : v / 60;
+  if (!(v > 0) || !Number.isInteger(v)) return showError("#sd-error", "Enter a whole number");
+  if (hours < 1 / 60 || hours > 272) return showError("#sd-error", "The time must be between 1 minute and 272 hrs");
+  $("#sd-dialog").close();
+  await setSd(hours);
+});
+
+// Ammunition card and dialog.
+const TYPES = ["GBL-240", "GBL-243"];
+
+function renderAmmo(a, firing) {
+  state.ammo = a;
+  $("#ammo-total").textContent = a.total;
+  $("#ammo-fired").textContent = a.fired;
+  const shells = (n, cls) => Array.from({ length: 6 }, (_, i) => `<i class="${i < n ? cls : ""}"></i>`).join("");
+  const frac = (x) => (a.loaded ? Math.round((6 * x) / a.loaded) : 0);
+  $("#shells-avail").innerHTML = shells(frac(a.loaded - a.fired), "full");
+  $("#shells-fired").innerHTML = shells(frac(a.fired), "spent");
+  const row = (label, key) => `<tr><td>${label}</td>${TYPES.map((t) => `<td>${a.types[t][key]}</td>`).join("")}</tr>`;
+  $("#ammo-rows").innerHTML = row("Total", "total") + row("Loaded", "loaded") + row("Fired", "fired") + row("Remaining loaded", "remaining");
+  let note = "";
+  if (firing?.active) note = `Firing ${firing.canister}: one every ${state.tracking?.params?.time_gap_s} s`;
+  else if (firing?.stopped) note = `<span class="warn">${esc(firing.stopped)}</span>`;
+  $("#ammo-firing").innerHTML = note;
+}
+
 $("#ammo-edit").addEventListener("click", async () => {
-  const s = state.settings;
-  const fired = prompt(`Canisters fired (of ${s.total_canisters}):`, s.fired_canisters);
-  if (fired === null) return;
-  try { renderSettings(await api("/api/settings/ammo", { method: "PUT", json: { fired: +fired } })); }
-  catch (err) { toast(err.message, true); }
+  const a = await api("/api/ammo");
+  for (const t of TYPES) {
+    $(`#am-total-${t.slice(4)}`).value = a.types[t].total;
+    $(`#am-loaded-${t.slice(4)}`).value = a.types[t].loaded;
+  }
+  $("#am-fired").textContent = `Fired so far: GBL-240 ${a.types["GBL-240"].fired}, GBL-243 ${a.types["GBL-243"].fired}`;
+  $("#am-reset").checked = false;
+  $("#am-error").classList.add("hidden");
+  $("#ammo-dialog").showModal();
+});
+
+$("#am-cancel").addEventListener("click", () => $("#ammo-dialog").close());
+
+$("#am-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const total = {}, loaded = {};
+  for (const t of TYPES) {
+    total[t] = +$(`#am-total-${t.slice(4)}`).value;
+    loaded[t] = +$(`#am-loaded-${t.slice(4)}`).value;
+    if (!Number.isInteger(total[t]) || !Number.isInteger(loaded[t]) || total[t] < 0 || loaded[t] < 0) {
+      return showError("#am-error", "Enter whole numbers, 0 or more");
+    }
+  }
+  try {
+    renderAmmo(await api("/api/ammo", { method: "PUT", json: { total, loaded, reset_fired: $("#am-reset").checked } }), state.tracking?.firing);
+    $("#ammo-dialog").close();
+    toast("Ammunition updated");
+  } catch (err) { showError("#am-error", err.message); }
 });
 
 // ------------------------------------------------------------ detection
@@ -1008,15 +1075,6 @@ $("#doc-form").addEventListener("submit", async (e) => {
 });
 
 // ------------------------------------------------------------ settings page
-
-$("#grid-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const fd = new FormData(e.target);
-  try {
-    renderSettings(await api("/api/settings/grid", { method: "PUT", json: { gzd: fd.get("gzd"), square: fd.get("square") } }));
-    toast("Grid defaults saved");
-  } catch (err) { toast(err.message, true); }
-});
 
 $("#tol-form").addEventListener("submit", async (e) => {
   e.preventDefault();

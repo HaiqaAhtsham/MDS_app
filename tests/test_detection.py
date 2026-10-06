@@ -73,7 +73,7 @@ def test_video_to_markers(client, app_env):
         r = client.post(
             "/api/detections",
             files={"video": ("flight.mp4", v, "video/mp4"), "telemetry": ("flight.srt", s, "text/plain")},
-            data={"sample_every_s": "1", "hfov_deg": str(HFOV), "min_hits": "2", "label": "mine"},
+            data={"sample_every_s": "1", "hfov_deg": str(HFOV), "min_hits": "2", "label": "APM"},
         )
     assert r.status_code == 200, r.text
     job_id = r.json()["job_id"]
@@ -91,14 +91,14 @@ def test_video_to_markers(client, app_env):
         want = detection.pixel_to_latlng(x, y, W, H, *DRONE, ALT, HFOV, 0)
         nearest = min(haversine(*want, m["lat"], m["lng"]) for m in markers)
         assert nearest < 0.5, f"marker {nearest:.2f} m from truth"
-    assert all(m["label"] == "mine" and m["crop"] for m in markers)
+    assert all(m["label"] == "APM" and m["crop"] for m in markers)
     # Default self-destruct time (48 h) applied.
     assert all(abs(m["expires_at"] - m["created_at"] - 48 * 3600) < 1 for m in markers)
 
 
 def test_self_destruct_expiry(client):
-    client.post("/api/markers", json={"lat": 33.6, "lng": 73.0})
-    client.post("/api/markers", json={"lat": 33.601, "lng": 73.0})
+    client.post("/api/markers", json={"lat": 33.6, "lng": 73.0, "kind": "ATM"})
+    client.post("/api/markers", json={"lat": 33.601, "lng": 73.0, "kind": "APM"})
     assert len(client.get("/api/markers").json()["markers"]) == 2
 
     # Out of the MLCU range 1-272 h.

@@ -35,7 +35,7 @@ class Hit:
     w: float
     h: float
     score: float
-    label: str = "object"
+    label: str = "ATM"  # marker type: ATM or APM
 
 
 @dataclass
@@ -51,7 +51,7 @@ class Options:
     # Used when there is no .srt: a fixed camera position.
     lat: float | None = None
     lng: float | None = None
-    label: str = "object"
+    label: str = "ATM"  # marker type: ATM or APM
 
 
 # ---------------------------------------------------------------- detectors
@@ -132,7 +132,8 @@ class YoloDetector:
         hits = []
         for r in self.model.predict(frame, conf=min(threshold, 0.5), verbose=False):
             for box, conf, cls in zip(r.boxes.xywh.tolist(), r.boxes.conf.tolist(), r.boxes.cls.tolist()):
-                hits.append(Hit(box[0], box[1], box[2], box[3], float(conf), r.names.get(int(cls), label)))
+                name = str(r.names.get(int(cls), "")).upper()  # a model trained with ATM/APM classes
+                hits.append(Hit(box[0], box[1], box[2], box[3], float(conf), name if name in ("ATM", "APM") else label))
         return hits
 
 
