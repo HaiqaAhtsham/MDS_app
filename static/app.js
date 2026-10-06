@@ -313,12 +313,13 @@ function paramsHtml(r, full) {
     <div class="kv"><span>Space interval b/w canisters</span><span>${r.interval_m} m</span></div>
     ${strip}`;
   if (!full) return head;
-  //const checks = r.checks.map((c) => `<li class="${c.ok ? "" : "warn"}">${c.ok ? "✓" : "⚠"} ${esc(c.name)}: ${esc(c.formula)} = ${c.computed}; chart: ${c.table}</li>`).join("");
+  const checks = r.checks.map((c) => `<li class="${c.ok ? "" : "warn"}">${c.ok ? "✓" : "⚠"} ${esc(c.name)}: ${esc(c.formula)} = ${c.computed}; chart: ${c.table}</li>`).join("");
   const flags = r.flags.map((f) => `<li class="warn">⚠ ${esc(f)}</li>`).join("");
   return `${head}
     <div class="label" style="margin-top:10px">Taken from the chart</div>
     <ul class="small src-list">${r.rows_used.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>
-    
+    <div class="label">Hand check (relationship that holds across the chart)</div>
+    <ul class="small src-list">${checks}</ul>
     ${flags ? `<ul class="small src-list">${flags}</ul>` : ""}
     <p class="small muted">${esc(r.source)}. Speeds in km/h.</p>`;
 }
