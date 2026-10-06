@@ -293,3 +293,7 @@ details summary { cursor: pointer; color: var(--muted); margin-bottom: 10px; }
 /* ---------- strip vs frontage warning ---------- */
 .frontage-warn { margin-top: 10px; padding: 8px 10px; border: 1px solid rgba(229,72,77,.6); background: rgba(229,72,77,.12); border-radius: 8px; font-size: 12px; }
 .frontage-warn .btn { margin-top: 6px; }
+
+/* ---------- route history ---------- */
+.page.wide { max-width: 1400px; }
+.routes-table td, .routes-table th { white-space: nowrap; }

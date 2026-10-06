@@ -70,6 +70,21 @@ def update(c, total: dict, loaded: dict, reset_fired: bool) -> dict:
     return read(c)
 
 
+def reset_fired(c) -> None:
+    for t in CANISTER_TYPES:
+        _set(c, _key("fired", t), 0)
+
+
+def expend_fired(c) -> None:
+    """End of a route: fired rockets leave the stock and the launchers, and
+    the fired count goes back to 0 for the next route."""
+    for t in CANISTER_TYPES:
+        fired = _get(c, _key("fired", t))
+        _set(c, _key("total", t), max(0, _get(c, _key("total", t)) - fired))
+        _set(c, _key("loaded", t), max(0, _get(c, _key("loaded", t)) - fired))
+        _set(c, _key("fired", t), 0)
+
+
 def fire(c, m: dict, now: float) -> None:
     """Count the canisters fired since the last call, one per time gap."""
     if m["status"] != "laying" or m.get("fire_next_at") is None or not m.get("time_gap"):

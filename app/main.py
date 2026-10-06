@@ -278,9 +278,14 @@ def set_params(body: ParamsIn, user=User):
 @app.post("/api/tracking/start")
 def start_mission(user=User):
     try:
-        return tracking.start_mission()
+        return tracking.start_mission(user["id"])
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+@app.get("/api/routes")
+def route_history(user=User):
+    return tracking.routes()
 
 
 @app.post("/api/tracking/reset")
@@ -498,9 +503,11 @@ def set_ammo(body: AmmoIn, user=User):
         total = {t: int(body.total.get(t, 0)) for t in db.CANISTER_TYPES}
         loaded = {t: int(body.loaded.get(t, 0)) for t in db.CANISTER_TYPES}
         with db.tx() as c:
-            return ammo.update(c, total, loaded, body.reset_fired)
+            result = ammo.update(c, total, loaded, body.reset_fired)
     except ammo.AmmoError as e:
         raise HTTPException(400, str(e))
+    tracking.ammo_entered()
+    return result
 
 
 # ------------------------------------------------------------- detection

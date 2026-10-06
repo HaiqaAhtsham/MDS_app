@@ -54,6 +54,20 @@ CREATE TABLE IF NOT EXISTS markers (
     created_by INTEGER
 );
 CREATE INDEX IF NOT EXISTS markers_expiry ON markers(expires_at);
+CREATE TABLE IF NOT EXISTS routes (
+    id INTEGER PRIMARY KEY,
+    status TEXT NOT NULL,              -- active, complete, abandoned
+    started_at REAL NOT NULL,
+    ended_at REAL,
+    started_by INTEGER,
+    start_lat REAL, start_lng REAL, end_lat REAL, end_lng REAL,
+    strip_length_m REAL,
+    mine_type TEXT, atm REAL, apm REAL, time_gap INTEGER, frontage_m REAL,
+    canister TEXT,
+    total_240 INTEGER, total_243 INTEGER, loaded_240 INTEGER, loaded_243 INTEGER,
+    fired_240 INTEGER NOT NULL DEFAULT 0, fired_243 INTEGER NOT NULL DEFAULT 0,
+    covered REAL NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
     filename TEXT,
@@ -76,6 +90,10 @@ MISSION_COLUMNS = {
     # Set when the end point was placed one frontage from the start along this
     # bearing; NULL when the end point was entered by hand.
     "end_bearing": "REAL",
+    # Route record being run (routes.id), and whether the ammunition has
+    # been entered for the route that is about to start.
+    "route_id": "INTEGER",
+    "ammo_ready": "INTEGER",
 }
 
 # Canister stock per type (handout p. 9: GBL-240 and GBL-243 are the two types in use).

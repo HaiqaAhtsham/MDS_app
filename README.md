@@ -128,6 +128,12 @@ cp runs/detect/train/weights/best.pt models/detector.pt   # the app uses it auto
 
 The handout (p. 27) gives the contents: GBL-240 holds 5 ATM and is used for ATM-only minefields; GBL-243 holds 4 ATM + 3 APM and is used for mixed minefields.
 
+**Each route needs its own ammunition entry.** Pressing **Start** (or **Simulate**) opens the dialog as *Ammunition for this route*; the route starts when it is saved (**Save & start route**). If the minefield's rocket type has none loaded (GBL-240 for ATM-only, GBL-243 for mixed), the route doesn't start and the dialog says why. Changing the start point, end point or parameters means entering the ammunition again.
+
+When a route ends (end point reached, or changed / reset before that), the rockets it fired are taken off the total and loaded numbers. The next route's dialog therefore starts from what is actually left, and its fired count starts at 0. The card shows what the last route fired.
+
+**Route history** (clock icon in the sidebar) lists every route: when it started and ended, who started it, start/end points, strip length, minefield parameters, how much was laid, rockets loaded and rockets fired of each type, and whether it was completed or abandoned.
+
 While the vehicle lays the strip, the app counts one rocket of that type as fired every **time gap** set in the minefield parameters. Counting starts when the vehicle reaches the start point and stops at the end point, or when that type's loaded rockets run out. Counting is by time, so it keeps going if the GPS drops out mid-strip. The dialog can reset the fired count.
 
 ### Self-destruct time

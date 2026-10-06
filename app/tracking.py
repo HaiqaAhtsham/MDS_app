@@ -41,13 +41,64 @@ def set_route(start: tuple[float, float], end: tuple[float, float]) -> None:
 
 
 def _replan(c) -> None:
-    """Any change to the route sends the mission back to planning."""
+    """Any change to the route sends the mission back to planning; the
+    ammunition has to be entered again before the next start."""
+    _close_route(c, "abandoned")
     c.execute(
         """UPDATE mission SET origin_lat = NULL, origin_lng = NULL, reached_start = 0, max_progress = 0,
-           started_at = NULL, fire_next_at = NULL, fire_stopped = NULL,
+           started_at = NULL, fire_next_at = NULL, fire_stopped = NULL, ammo_ready = 0,
            status = CASE WHEN start_lat IS NOT NULL AND end_lat IS NOT NULL THEN 'planned' ELSE 'idle' END
            WHERE id = 1"""
     )
+
+
+def _sync_route(c) -> None:
+    """Copy fired counts and progress into the route record."""
+    m = _mission(c)
+    if not m["route_id"]:
+        return
+    stock = ammo.read(c)["types"]
+    c.execute(
+        "UPDATE routes SET fired_240 = ?, fired_243 = ?, covered = ? WHERE id = ? AND status = 'active'",
+        (stock["GBL-240"]["fired"], stock["GBL-243"]["fired"], m["max_progress"], m["route_id"]),
+    )
+
+
+def _close_route(c, status: str) -> None:
+    m = _mission(c)
+    if not m["route_id"]:
+        return
+    _sync_route(c)
+    c.execute(
+        "UPDATE routes SET status = ?, ended_at = ? WHERE id = ? AND status = 'active'",
+        (status, time.time(), m["route_id"]),
+    )
+    c.execute("UPDATE mission SET route_id = NULL WHERE id = 1")
+    ammo.expend_fired(c)
+
+
+def ammo_entered() -> None:
+    """The ammunition dialog was saved: the planned route may start."""
+    with db.tx() as c:
+        m = _mission(c)
+        c.execute("UPDATE mission SET ammo_ready = 1 WHERE id = 1")
+        if m["route_id"]:  # reloaded during a route: keep the record current
+            stock = ammo.read(c)["types"]
+            c.execute(
+                "UPDATE routes SET total_240 = ?, total_243 = ?, loaded_240 = ?, loaded_243 = ? WHERE id = ?",
+                (stock["GBL-240"]["total"], stock["GBL-243"]["total"],
+                 stock["GBL-240"]["loaded"], stock["GBL-243"]["loaded"], m["route_id"]),
+            )
+
+
+def routes(limit: int = 100) -> list[dict]:
+    with db.tx() as c:
+        rows = c.execute(
+            """SELECT r.*, u.username FROM routes r LEFT JOIN users u ON u.id = r.started_by
+               ORDER BY r.started_at DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def _place_end_by_frontage(c) -> None:
@@ -108,13 +159,35 @@ def _params(m: dict) -> dict | None:
         return None
 
 
-def start_mission() -> dict:
+def start_mission(user_id: int | None = None) -> dict:
     with db.tx() as c:
         m = _mission(c)
         if m["start_lat"] is None or m["end_lat"] is None:
             raise ValueError("Set a start and end point first")
-        if not _params(m):
+        params = _params(m)
+        if not params:
             raise ValueError("Choose the mine type and parameters first")
+        if not m["ammo_ready"]:
+            raise ValueError("Enter the ammunition for this route first")
+        canister = ammo.CANISTER_FOR[m["mine_type"]]
+        stock = ammo.read(c)["types"]
+        if stock[canister]["loaded"] < 1:
+            raise ValueError(f"No {canister} rockets loaded; this minefield fires {canister}")
+        _close_route(c, "abandoned")
+        ammo.reset_fired(c)  # each route counts its own rockets
+        now = time.time()
+        cur = c.execute(
+            """INSERT INTO routes (status, started_at, started_by, start_lat, start_lng, end_lat, end_lng,
+               strip_length_m, mine_type, atm, apm, time_gap, frontage_m, canister,
+               total_240, total_243, loaded_240, loaded_243)
+               VALUES ('active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (now, user_id, m["start_lat"], m["start_lng"], m["end_lat"], m["end_lng"],
+             round(haversine(m["start_lat"], m["start_lng"], m["end_lat"], m["end_lng"]), 1),
+             m["mine_type"], m["atm"], m["apm"], m["time_gap"], params["frontage_m"], canister,
+             stock["GBL-240"]["total"], stock["GBL-243"]["total"],
+             stock["GBL-240"]["loaded"], stock["GBL-243"]["loaded"]),
+        )
+        c.execute("UPDATE mission SET route_id = ?, ammo_ready = 0 WHERE id = 1", (cur.lastrowid,))
         pos = _latest(c)
         origin = (pos["lat"], pos["lng"]) if pos and time.time() - pos["ts"] < 300 else (None, None)
         c.execute(
@@ -130,11 +203,13 @@ def start_mission() -> dict:
 
 def reset_mission() -> None:
     with db.tx() as c:
+        _close_route(c, "abandoned")
         c.execute(
             """UPDATE mission SET start_lat = NULL, start_lng = NULL, end_lat = NULL, end_lng = NULL,
                origin_lat = NULL, origin_lng = NULL, reached_start = 0, max_progress = 0,
                status = 'idle', started_at = NULL, mine_type = NULL, atm = NULL, apm = NULL,
-               time_gap = NULL, fire_next_at = NULL, fire_stopped = NULL, end_bearing = NULL WHERE id = 1"""
+               time_gap = NULL, fire_next_at = NULL, fire_stopped = NULL, end_bearing = NULL,
+               ammo_ready = 0 WHERE id = 1"""
         )
         c.execute("DELETE FROM positions")
 
@@ -175,15 +250,21 @@ def _advance(c, lat: float, lng: float) -> None:
     if haversine(lat, lng, *end) <= config.ARRIVAL_RADIUS_M:
         # End point: firing switches off.
         c.execute("UPDATE mission SET max_progress = 1.0, status = 'complete', fire_next_at = NULL WHERE id = 1")
+        _close_route(c, "complete")
     else:
         c.execute("UPDATE mission SET max_progress = ?, status = 'laying' WHERE id = 1", (covered,))
+        _sync_route(c)
 
 
 def state() -> dict:
     with db.tx() as c:
         ammo.fire(c, _mission(c), time.time())  # firing continues between GPS fixes
+        _sync_route(c)
         m = _mission(c)
         stock = ammo.read(c)
+        last = c.execute(
+            "SELECT id, status, fired_240, fired_243 FROM routes WHERE status != 'active' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
         pos = _latest(c)
         since = m["started_at"] or 0
         trail = [
@@ -203,6 +284,9 @@ def state() -> dict:
         "trail": trail,
         "covered": round(m["max_progress"], 4),
         "params": _params(m),
+        "ammo_ready": bool(m["ammo_ready"]),
+        "route_id": m["route_id"],
+        "last_route": dict(last) if last else None,
         "ammo": stock,
         "firing": {
             "active": m["status"] == "laying" and m["fire_next_at"] is not None,

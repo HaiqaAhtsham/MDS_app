@@ -79,6 +79,7 @@ function show(view) {
   if (view === "detect") { loadReference(); loadJobs(); }
   if (view === "users") loadUsers();
   if (view === "docs") loadDocs();
+  if (view === "routes") loadRoutes();
 }
 $$(".rail button").forEach((b) => b.addEventListener("click", () => show(b.dataset.view)));
 $$("[data-goto]").forEach((b) => b.addEventListener("click", () => show(b.dataset.goto)));
@@ -457,11 +458,16 @@ function updateGpsUi() {
 const SIM_TICK_S = 0.7;
 const SIM_APPROACH_MS = 15; // simulated approach speed, m/s (demo only)
 
-$("#btn-sim").addEventListener("click", async () => {
+$("#btn-sim").addEventListener("click", () => {
   if (state.sim) return stopSim();
+  if (routeActive()) return simulate();
+  const why = readyToStart();
+  if (why) return toast(why, true);
+  openAmmoDialog(true, simulate);
+});
+
+async function simulate() {
   const t = state.tracking;
-  if (!t?.start || !t?.end) return toast("Set a start and end point first", true);
-  if (!t.params) return toast("Choose the mine parameters first", true);
   if (state.gpsWatch !== null) $("#btn-gps").click();
   if (!t.vehicle) {
     const dLat = t.start[0] - t.end[0], dLng = t.start[1] - t.end[1];
@@ -485,7 +491,7 @@ $("#btn-sim").addEventListener("click", async () => {
   };
   state.sim = setTimeout(go, 0);
   updateGpsUi();
-});
+}
 
 function resample(path, stepM) {
   const out = [];
@@ -522,11 +528,24 @@ async function startMission() {
   renderTracking(await api("/api/tracking/start", { method: "POST" }));
 }
 
-$("#btn-start").addEventListener("click", async () => {
-  try {
-    if (!["approach", "laying"].includes(state.tracking?.status)) await startMission();
+const routeActive = () => ["approach", "laying"].includes(state.tracking?.status);
+
+// Before a route starts, the ammunition for it must be entered.
+function readyToStart() {
+  const t = state.tracking;
+  if (!t?.start || !t?.end) return "Set a start and end point first";
+  if (!t.params) return "Choose the minefield parameters first";
+  return null;
+}
+
+$("#btn-start").addEventListener("click", () => {
+  if (routeActive()) return openNav();
+  const why = readyToStart();
+  if (why) return toast(why, true);
+  openAmmoDialog(true, async () => {
+    await startMission();
     openNav();
-  } catch (err) { toast(err.message, true); }
+  });
 });
 $("#nav-close").addEventListener("click", closeNav);
 
@@ -974,11 +993,25 @@ function renderAmmo(a, firing) {
   let note = "";
   if (firing?.active) note = `Firing ${firing.canister}: one every ${state.tracking?.params?.time_gap_s} s`;
   else if (firing?.stopped) note = `<span class="warn">${esc(firing.stopped)}</span>`;
+  const last = state.tracking?.last_route;
+  if (!firing?.active && last) {
+    note += `${note ? "<br>" : ""}Last route #${last.id} (${last.status}): fired ${last.fired_240} GBL-240, ${last.fired_243} GBL-243`;
+  }
   $("#ammo-firing").innerHTML = note;
 }
 
-$("#ammo-edit").addEventListener("click", async () => {
+let ammoThen = null; // what to do after saving (start the route)
+
+async function openAmmoDialog(forRoute = false, then = null) {
+  ammoThen = then;
   const a = await api("/api/ammo");
+  const p = state.tracking?.params;
+  $("#am-title").textContent = forRoute ? "Ammunition for this route" : "Ammunition";
+  $("#am-route-note").innerHTML = forRoute && p
+    ? `This ${p.mine_type === "mixed" ? "mixed" : "ATM-only"} minefield fires <b>${p.mine_type === "mixed" ? "GBL-243" : "GBL-240"}</b>, one every ${p.time_gap_s} s. The fired count starts at 0 for this route.`
+    : "";
+  $("#am-fired-wrap").classList.toggle("hidden", forRoute);
+  $("#am-submit").textContent = forRoute ? "Save & start route" : "Save";
   for (const t of TYPES) {
     $(`#am-total-${t.slice(4)}`).value = a.types[t].total;
     $(`#am-loaded-${t.slice(4)}`).value = a.types[t].loaded;
@@ -987,9 +1020,11 @@ $("#ammo-edit").addEventListener("click", async () => {
   $("#am-reset").checked = false;
   $("#am-error").classList.add("hidden");
   $("#ammo-dialog").showModal();
-});
+}
 
-$("#am-cancel").addEventListener("click", () => $("#ammo-dialog").close());
+$("#ammo-edit").addEventListener("click", () => openAmmoDialog(false));
+
+$("#am-cancel").addEventListener("click", () => { ammoThen = null; $("#ammo-dialog").close(); });
 
 $("#am-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -1003,8 +1038,15 @@ $("#am-form").addEventListener("submit", async (e) => {
   }
   try {
     renderAmmo(await api("/api/ammo", { method: "PUT", json: { total, loaded, reset_fired: $("#am-reset").checked } }), state.tracking?.firing);
+  } catch (err) { return showError("#am-error", err.message); }
+  if (!ammoThen) {
     $("#ammo-dialog").close();
-    toast("Ammunition updated");
+    return toast("Ammunition updated");
+  }
+  try {
+    await ammoThen(); // start the route; on failure the dialog stays open to fix it
+    ammoThen = null;
+    $("#ammo-dialog").close();
   } catch (err) { showError("#am-error", err.message); }
 });
 
@@ -1076,6 +1118,28 @@ $("#ref-form").addEventListener("submit", async (e) => {
     loadReference();
   } catch (err) { toast(err.message, true); }
 });
+
+// ------------------------------------------------------------ route history
+
+async function loadRoutes() {
+  const rows = await api("/api/routes").catch((e) => { toast(e.message, true); return []; });
+  const cls = { complete: "ok", active: "run", abandoned: "bad" };
+  const ll = (a, b) => (a == null ? "–" : `${a.toFixed(5)}, ${b.toFixed(5)}`);
+  $("#routes").innerHTML = rows.map((r) => `<tr>
+    <td>${r.id}</td>
+    <td class="small">${fmtDate(r.started_at)}</td>
+    <td class="small">${r.ended_at ? fmtDate(r.ended_at) : "–"}</td>
+    <td><span class="badge ${cls[r.status] || ""}">${esc(r.status)}</span></td>
+    <td>${esc(r.username || "–")}</td>
+    <td class="small">${ll(r.start_lat, r.start_lng)}</td>
+    <td class="small">${ll(r.end_lat, r.end_lng)}</td>
+    <td>${fmtM(r.strip_length_m)}</td>
+    <td class="small">${r.mine_type === "mixed" ? `Mixed ${r.atm}/${r.apm}` : `ATM only ${r.atm}`} · ${r.time_gap} s · ${r.frontage_m} m</td>
+    <td>${Math.round((r.covered || 0) * 100)}%</td>
+    <td>${r.fired_240}</td><td>${r.fired_243}</td>
+    <td>${r.loaded_240} / ${r.loaded_243}</td></tr>`).join("")
+    || '<tr><td colspan="13" class="muted">No routes started yet.</td></tr>';
+}
 
 // ------------------------------------------------------------ users
 
