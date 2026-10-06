@@ -86,3 +86,8 @@ def test_chat_answers_from_handout(client):
 
     r = client.post("/api/chat", json={"question": "How long does reloading of the launchers take?"}).json()
     assert "72" in r["answer"]
+
+
+def test_pages_and_scripts_are_revalidated(client):
+    for path in ("/", "/login", "/static/app.js", "/static/styles.css"):
+        assert client.get(path).headers["cache-control"] == "no-cache"

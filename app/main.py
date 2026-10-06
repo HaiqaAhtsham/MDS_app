@@ -50,6 +50,18 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="MDS Dashboard", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def revalidate_pages(request: Request, call_next):
+    """Make browsers check for a newer page, script or stylesheet on every
+    load. Without this a browser can keep an old app.js after an update,
+    which breaks the dashboard until a hard refresh."""
+    response = await call_next(request)
+    path = request.url.path
+    if path in ("/", "/login") or path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 User = Depends(auth.current_user)
 Admin = Depends(auth.require_admin)
 
