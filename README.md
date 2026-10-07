@@ -103,6 +103,19 @@ The app flags these chart values (they are still the values used):
    - **Camera HFOV:** the camera's horizontal field of view. The default of 73.7° fits many DJI cameras; check yours.
 3. Choose the **marker type** (ATM or APM) before uploading. Each object that is found becomes one marker of that type. Hits of the same object across frames are merged within 3 m. A marker's popup shows the matched image crop, the match score and the self-destruct countdown. When there are three or more markers, a red dashed perimeter with its corner coordinates is drawn around them.
 
+#### If nothing is detected
+
+Every job in **Recent jobs** shows a **Best match**: a picture of the closest thing the detector found and its score, even when that score is below the threshold. Use it to tune:
+
+1. **Crop the reference tightly.** Click **Crop** under the reference picture and drag a box around the object only. A loose screenshot is mostly ground, and ground matches ground everywhere.
+2. **Look at the best-match picture.**
+   - If it shows the object, set the **match threshold** a little below its score (the job message suggests a value).
+   - If it shows something else, the reference doesn't look like the object in this video. Take the screenshot from this video at full size, with the camera pointing straight down.
+3. **Enter the object size** (m) if you know it. The search then concentrates on the right size, which matters for small objects of only 10–20 pixels.
+4. **Read the job message.** It says when frames were skipped because the `.srt` has no flight height (enter it under **Advanced → Altitude**), when the `.srt` format wasn't recognised (it quotes a line; send it to the developer), or when the video couldn't be decoded. For a video that can't be decoded, convert it with `ffmpeg -i input.mp4 -c:v libx264 -crf 18 output.mp4`.
+
+The DJI flight-record log (`.txt`/`.DAT`) isn't needed; the `.srt` file has the per-frame position.
+
 About the `.srt` files: they are **not training data**. DJI drones write the GPS position, altitude and heading for every frame into that subtitle file, and the app uses them to turn a pixel in the frame into a latitude and longitude. The calculation assumes the camera points straight down (gimbal pitch −90°). Oblique footage will place markers less accurately.
 
 The built-in detector compares each frame with your reference pictures at several sizes and 4 rotations. That is enough to get started, but it is sensitive to lighting, scale and background. For field use, train a real detector:

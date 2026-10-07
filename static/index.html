@@ -157,8 +157,8 @@
               <details>
                 <summary>Advanced</summary>
                 <div class="row">
-                  <div class="field"><label>Sample every (s)</label><input name="sample_every_s" type="number" step="0.1" value="1" min="0.05"></div>
-                  <div class="field"><label>Match threshold</label><input name="threshold" type="number" step="0.01" value="0.72" min="0.3" max="0.99"></div>
+                  <div class="field"><label>Sample every (s)</label><input name="sample_every_s" type="number" step="0.1" value="1" min="0.1"></div>
+                  <div class="field"><label>Match threshold</label><input name="threshold" type="number" step="0.01" value="0.65" min="0.3" max="0.99"></div>
                 </div>
                 <div class="row">
                   <div class="field"><label>Camera HFOV (°)</label><input name="hfov_deg" type="number" step="0.1" value="73.7"></div>
@@ -168,7 +168,7 @@
                 <div class="row">
                   <div class="field"><label>Latitude</label><input name="lat" type="number" step="any"></div>
                   <div class="field"><label>Longitude</label><input name="lng" type="number" step="any"></div>
-                  <div class="field"><label>Altitude (m)</label><input name="altitude_m" type="number" step="0.1"></div>
+                  <div class="field"><label>Altitude (m)</label><input name="altitude_m" type="number" step="any" min="0.1"></div>
                 </div>
               </details>
               <div id="upload-bar" class="bar hidden" style="margin-bottom:10px"><i style="width:0"></i></div>
@@ -191,7 +191,7 @@
           <div class="card">
             <div class="card-h">Recent jobs</div>
             <div class="card-b" style="overflow:auto">
-              <table><thead><tr><th>Video</th><th>Status</th><th>Progress</th><th>Detections</th><th>Marked</th><th>Message</th></tr></thead><tbody id="jobs"></tbody></table>
+              <table><thead><tr><th>Video</th><th>Status</th><th>Progress</th><th>Detections</th><th>Marked</th><th>Best match</th><th>Message</th></tr></thead><tbody id="jobs"></tbody></table>
             </div>
           </div>
         </div>
@@ -359,6 +359,18 @@
       <button class="btn primary" id="am-submit">Save</button>
     </div>
   </form>
+</dialog>
+
+<dialog id="crop-dialog" class="dlg">
+  <h3>Crop reference picture</h3>
+  <p class="small muted" id="crop-info"></p>
+  <canvas id="crop-canvas" style="max-width:100%; cursor:crosshair; touch-action:none; display:block; margin:0 auto; background:#000"></canvas>
+  <p class="small muted">Keep only the object, with as little ground around it as possible. The picture is replaced by the crop.</p>
+  <div class="dlg-actions">
+    <span class="spacer"></span>
+    <button type="button" class="btn" id="crop-cancel">Cancel</button>
+    <button type="button" class="btn primary" id="crop-save">Save crop</button>
+  </div>
 </dialog>
 
 <dialog id="sd-dialog" class="dlg">

@@ -1082,8 +1082,11 @@ async function loadJobs() {
     <td>${esc(j.filename)}</td>
     <td><span class="badge ${cls[j.status] || ""}">${esc(j.status)}</span></td>
     <td style="min-width:90px"><div class="bar"><i style="width:${Math.round(j.progress * 100)}%"></i></div></td>
-    <td>${j.detections}</td><td>${j.markers}</td><td class="small muted">${esc(j.message || "")}</td></tr>`).join("")
-    || '<tr><td colspan="6" class="muted">No videos processed yet.</td></tr>';
+    <td>${j.detections}</td><td>${j.markers}</td>
+    <td>${j.best_crop ? `<img class="best-crop" src="/api/crops/${esc(j.best_crop)}" alt="best match" title="Best match at ${j.best_time} s, about ${j.best_size_px} px">
+      <div class="small">${j.best_score.toFixed(2)}</div>` : "–"}</td>
+    <td class="small muted">${esc(j.message || "")}</td></tr>`).join("")
+    || '<tr><td colspan="7" class="muted">No videos processed yet.</td></tr>';
   return jobs;
 }
 
@@ -1102,13 +1105,75 @@ async function loadReference() {
   const admin = state.me?.role === "admin";
   $("#ref-gallery").innerHTML = names.map((n) => `<figure><img src="/api/reference/${encodeURIComponent(n)}" alt="">
     ${esc(n.length > 18 ? n.slice(0, 16) + "…" : n)}
-    ${admin ? `<br><button class="btn sm danger" data-del-ref="${esc(n)}">Delete</button>` : ""}</figure>`).join("")
+    ${admin ? `<br><button class="btn sm" data-crop-ref="${esc(n)}">Crop</button> <button class="btn sm danger" data-del-ref="${esc(n)}">Delete</button>` : ""}</figure>`).join("")
     || '<p class="warn small">No reference pictures yet. Detection needs at least one.</p>';
+  $$("[data-crop-ref]").forEach((b) => b.addEventListener("click", () => openCrop(b.dataset.cropRef)));
   $$("[data-del-ref]").forEach((b) => b.addEventListener("click", async () => {
     await api(`/api/reference/${encodeURIComponent(b.dataset.delRef)}`, { method: "DELETE" }).catch((e) => toast(e.message, true));
     loadReference();
   }));
 }
+
+// Crop a reference picture tightly around the object: a loose crop is
+// mostly background, and background matches background everywhere.
+const crop = { name: null, img: null, scale: 1, box: null, drag: null };
+
+function openCrop(name) {
+  crop.name = name;
+  crop.box = null;
+  crop.img = new Image();
+  crop.img.onload = () => {
+    const c = $("#crop-canvas");
+    const maxW = Math.min(560, window.innerWidth - 80), maxH = 420;
+    crop.scale = Math.min(maxW / crop.img.width, maxH / crop.img.height, 8);
+    c.width = Math.round(crop.img.width * crop.scale);
+    c.height = Math.round(crop.img.height * crop.scale);
+    drawCrop();
+    $("#crop-info").textContent = `Picture ${crop.img.width} × ${crop.img.height} px. Drag a box tightly around the object.`;
+    $("#crop-dialog").showModal();
+  };
+  crop.img.src = `/api/reference/${encodeURIComponent(name)}?t=${Date.now()}`;
+}
+
+function drawCrop() {
+  const c = $("#crop-canvas"), ctx = c.getContext("2d");
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(crop.img, 0, 0, c.width, c.height);
+  if (crop.box) {
+    const { x, y, w, h } = crop.box;
+    ctx.fillStyle = "rgba(0,0,0,0.5)";
+    ctx.fillRect(0, 0, c.width, y); ctx.fillRect(0, y + h, c.width, c.height - y - h);
+    ctx.fillRect(0, y, x, h); ctx.fillRect(x + w, y, c.width - x - w, h);
+    ctx.strokeStyle = "#f5a524"; ctx.lineWidth = 2; ctx.strokeRect(x, y, w, h);
+  }
+}
+
+function cropPoint(e) {
+  const r = $("#crop-canvas").getBoundingClientRect();
+  return [Math.max(0, Math.min(r.width, e.clientX - r.left)), Math.max(0, Math.min(r.height, e.clientY - r.top))];
+}
+$("#crop-canvas").addEventListener("pointerdown", (e) => { crop.drag = cropPoint(e); e.target.setPointerCapture(e.pointerId); });
+$("#crop-canvas").addEventListener("pointermove", (e) => {
+  if (!crop.drag) return;
+  const [x1, y1] = crop.drag, [x2, y2] = cropPoint(e);
+  crop.box = { x: Math.min(x1, x2), y: Math.min(y1, y2), w: Math.abs(x2 - x1), h: Math.abs(y2 - y1) };
+  drawCrop();
+  const px = (v) => Math.round(v / crop.scale);
+  $("#crop-info").textContent = `Box ${px(crop.box.w)} × ${px(crop.box.h)} px`;
+});
+$("#crop-canvas").addEventListener("pointerup", () => { crop.drag = null; });
+$("#crop-cancel").addEventListener("click", () => $("#crop-dialog").close());
+$("#crop-save").addEventListener("click", async () => {
+  const b = crop.box;
+  if (!b || b.w / crop.scale < 6 || b.h / crop.scale < 6) return toast("Drag a box around the object first", true);
+  const body = { x: Math.round(b.x / crop.scale), y: Math.round(b.y / crop.scale), w: Math.round(b.w / crop.scale), h: Math.round(b.h / crop.scale) };
+  try {
+    await api(`/api/reference/${encodeURIComponent(crop.name)}/crop`, { method: "POST", json: body });
+    $("#crop-dialog").close();
+    toast("Reference picture cropped");
+    loadReference();
+  } catch (err) { toast(err.message, true); }
+});
 
 $("#ref-form").addEventListener("submit", async (e) => {
   e.preventDefault();

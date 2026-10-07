@@ -13,6 +13,7 @@ Pipeline for an uploaded video:
 
 import logging
 import math
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -42,7 +43,7 @@ class Hit:
 class Options:
     sample_every_s: float = 1.0
     hfov_deg: float = 73.7  # horizontal field of view of the camera
-    threshold: float = 0.72  # template matching score (0-1)
+    threshold: float = 0.65  # template matching score (0-1)
     object_size_m: float | None = None  # real-world size, narrows the search
     min_hits: int = 1  # frames an object must appear in to become a marker
     merge_radius_m: float = 3.0
@@ -76,50 +77,133 @@ def _iou(a: Hit, b: Hit) -> float:
 
 class TemplateDetector:
     """Few-shot detector: normalised cross-correlation against each
-    reference picture at several sizes and 4 rotations. Works best when the
-    reference pictures are tight, top-down crops of the object."""
+    reference picture at many sizes and 4 rotations. Works best when the
+    reference pictures are tight, top-down crops of the object.
 
-    SIZES_PX = (14, 20, 28, 40, 56, 80, 112)
+    Large sizes are matched on a downscaled copy of the frame (the template
+    is never bigger than WORK_PX there), which keeps the wide size search fast.
+    """
+
+    MIN_PX, SIZE_STEP, WORK_PX = 10, 1.15, 64
+    COARSE_SLACK = 0.15  # coarse pass keeps candidates this far below the threshold
+    BACKGROUND_PCT = 99.0  # "typical good match" level of a frame, per size and rotation
+    MIN_CONTRAST = float(os.environ.get("MDS_MIN_CONTRAST", "0.35"))  # tuned on test flights
     MAX_PEAKS = 200
+    MAX_REFINE = 60
 
     def __init__(self, reference_dir: Path):
-        self.templates: list[np.ndarray] = []
+        self.templates: list[tuple[str, np.ndarray]] = []
         for p in sorted(reference_dir.iterdir()) if reference_dir.exists() else []:
             if p.suffix.lower() in IMAGE_EXT:
                 img = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
                 if img is not None and min(img.shape) >= 8:
-                    self.templates.append(img)
+                    self.templates.append((p.name, img))
         if not self.templates:
             raise RuntimeError(f"No reference pictures found in {reference_dir}")
+        self.best: dict | None = None  # best match seen, even below the threshold
 
-    def detect(self, frame: np.ndarray, threshold: float, expected_px: float | None, label: str) -> list[Hit]:
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    def sizes(self, tpl: np.ndarray, frame_h: int, expected_px: float | None, frame_scale: float) -> list[float]:
+        """Template sizes (longest side, px in the processed frame) to try."""
         if expected_px:
-            sizes = [s for s in (expected_px * 0.8, expected_px, expected_px * 1.25) if s >= 8]
-        else:
-            sizes = list(self.SIZES_PX)
-        hits: list[Hit] = []
-        for tpl in self.templates:
-            for size in sizes:
-                scale = size / max(tpl.shape)
-                t = cv2.resize(tpl, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-                if t.shape[0] >= gray.shape[0] or t.shape[1] >= gray.shape[1] or min(t.shape) < 6:
-                    continue
+            # Object size given: a band around it (height/FOV are rarely exact).
+            return [expected_px * f for f in (0.6, 0.7, 0.8, 0.9, 1.0, 1.12, 1.25, 1.4, 1.6) if expected_px * f >= 8]
+        top = max(self.MIN_PX * 2, frame_h / 3)
+        out, x = [], float(self.MIN_PX)
+        while x <= top:
+            out.append(x)
+            x *= self.SIZE_STEP
+        # A screenshot cut from the same video: its own size, scaled like the frame.
+        native = max(tpl.shape) * frame_scale
+        if self.MIN_PX <= native <= top:
+            out += [native * 0.9, native, native * 1.1]
+        return sorted(out)
+
+    def _template(self, tpl: np.ndarray, size: float, rot: int) -> np.ndarray | None:
+        scale = size / max(tpl.shape)
+        t = cv2.resize(tpl, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        if min(t.shape) < 6:
+            return None
+        return np.ascontiguousarray(np.rot90(t, rot))
+
+    def detect(self, frame: np.ndarray, threshold: float, expected_px: float | None, label: str,
+               frame_scale: float = 1.0) -> list[Hit]:
+        """Two passes. Coarse: every size and rotation, keep anything within
+        COARSE_SLACK of the threshold. Fine: around each candidate, re-match
+        at every pixel size nearby (small objects need the size to the pixel)."""
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        pyramid: dict[float, np.ndarray] = {1.0: gray}
+        candidates: list[tuple[Hit, np.ndarray, str]] = []
+        coarse_thr = max(0.2, threshold - self.COARSE_SLACK)
+        for name, tpl in self.templates:
+            for size in self.sizes(tpl, gray.shape[0], expected_px, frame_scale):
+                work = round(min(1.0, self.WORK_PX / size), 3)  # match large sizes on a smaller frame
+                g = pyramid.get(work)
+                if g is None:
+                    g = pyramid[work] = cv2.resize(gray, None, fx=work, fy=work, interpolation=cv2.INTER_AREA)
                 for rot in range(4):
-                    tr = np.ascontiguousarray(np.rot90(t, rot))
-                    res = cv2.matchTemplate(gray, tr, cv2.TM_CCOEFF_NORMED)
+                    tr = self._template(tpl, size * work, rot)
+                    if tr is None or tr.shape[0] >= g.shape[0] or tr.shape[1] >= g.shape[1]:
+                        continue
+                    res = cv2.matchTemplate(g, tr, cv2.TM_CCOEFF_NORMED)
                     th, tw = tr.shape
-                    # Keep local maxima only, otherwise every pixel around a
-                    # match counts as a separate hit.
+                    _, mx, _, loc = cv2.minMaxLoc(res)
+                    self._note_best(mx, size, name, (loc[0] + tw / 2) / work, (loc[1] + th / 2) / work, tw / work, th / work)
+                    if mx < coarse_thr:
+                        continue
+                    # A real object stands out from what this template matches
+                    # elsewhere in the frame; ground texture doesn't.
+                    floor = float(np.percentile(res[::3, ::3], self.BACKGROUND_PCT))
+                    need = max(coarse_thr, floor + self.MIN_CONTRAST)
+                    if mx < need:
+                        continue
                     k = max(3, (min(th, tw) // 2) | 1)
-                    peaks = (res >= threshold) & (res >= cv2.dilate(res, np.ones((k, k), np.uint8)))
+                    peaks = (res >= need) & (res >= cv2.dilate(res, np.ones((k, k), np.uint8)))
                     ys, xs = np.nonzero(peaks)
                     if len(ys) > self.MAX_PEAKS:
                         top = np.argsort(res[ys, xs])[-self.MAX_PEAKS:]
                         ys, xs = ys[top], xs[top]
                     for y, x in zip(ys, xs):
-                        hits.append(Hit(x + tw / 2, y + th / 2, tw, th, float(res[y, x]), label))
+                        hit = Hit((x + tw / 2) / work, (y + th / 2) / work, tw / work, th / work, float(res[y, x]), label)
+                        candidates.append((hit, tpl, name))
+        # Fine pass on the strongest, non-overlapping candidates.
+        candidates.sort(key=lambda c: -c[0].score)
+        kept: list[tuple[Hit, np.ndarray, str]] = []
+        for c in candidates:
+            if all(_iou(c[0], k[0]) < 0.3 for k in kept):
+                kept.append(c)
+            if len(kept) >= self.MAX_REFINE:
+                break
+        hits = []
+        for cand, tpl, name in kept:
+            h = self._refine(gray, cand, tpl, name)
+            if h.score >= threshold:
+                hits.append(h)
         return _nms(hits)
+
+    def _refine(self, gray: np.ndarray, cand: Hit, tpl: np.ndarray, name: str) -> Hit:
+        size0 = max(cand.w, cand.h)
+        lo, hi = size0 / 1.2, size0 * 1.2
+        sizes = sorted({round(x) for x in np.arange(lo, hi + 1, max(1.0, size0 * 0.04))})
+        best = cand
+        pad = int(size0 * 1.5) + 4
+        x0, y0 = int(max(0, cand.x - pad)), int(max(0, cand.y - pad))
+        roi = gray[y0:int(cand.y + pad), x0:int(cand.x + pad)]
+        for size in sizes:
+            for rot in range(4):
+                tr = self._template(tpl, size, rot)
+                if tr is None or tr.shape[0] >= roi.shape[0] or tr.shape[1] >= roi.shape[1]:
+                    continue
+                res = cv2.matchTemplate(roi, tr, cv2.TM_CCOEFF_NORMED)
+                _, mx, _, loc = cv2.minMaxLoc(res)
+                if mx > best.score:
+                    th, tw = tr.shape
+                    best = Hit(x0 + loc[0] + tw / 2, y0 + loc[1] + th / 2, tw, th, float(mx), cand.label)
+        self._note_best(best.score, max(best.w, best.h), name, best.x, best.y, best.w, best.h)
+        return best
+
+    def _note_best(self, score, size, name, x, y, w, h) -> None:
+        if self.best is None or score > self.best["score"]:
+            self.best = {"score": float(score), "size_px": round(size), "reference": name, "x": x, "y": y, "w": w, "h": h}
 
 
 class YoloDetector:
@@ -128,7 +212,10 @@ class YoloDetector:
 
         self.model = YOLO(str(weights))
 
-    def detect(self, frame: np.ndarray, threshold: float, expected_px: float | None, label: str) -> list[Hit]:
+    best = None
+
+    def detect(self, frame: np.ndarray, threshold: float, expected_px: float | None, label: str,
+               frame_scale: float = 1.0) -> list[Hit]:
         hits = []
         for r in self.model.predict(frame, conf=min(threshold, 0.5), verbose=False):
             for box, conf, cls in zip(r.boxes.xywh.tolist(), r.boxes.conf.tolist(), r.boxes.cls.tolist()):
@@ -215,15 +302,36 @@ def _update_job(job_id: str, **fields) -> None:
         c.execute(f"UPDATE jobs SET {cols} WHERE id = ?", (*fields.values(), job_id))
 
 
+def _save_crop(frame: np.ndarray, x: float, y: float, w: float, h: float) -> str | None:
+    pad = max(w, h)
+    x0, y0 = int(max(0, x - pad)), int(max(0, y - pad))
+    crop = frame[y0:int(y + pad), x0:int(x + pad)]
+    if not crop.size:
+        return None
+    name = f"{uuid.uuid4().hex[:16]}.jpg"
+    cv2.imwrite(str(config.CROP_DIR / name), crop)
+    return name
+
+
 def run_job(job_id: str, video: Path, srt_path: Path | None, opts: Options, user_id: int | None) -> None:
     try:
         _update_job(job_id, status="running", message="Loading detector")
         detector = load_detector()
-        fixes = srt.parse(srt_path.read_text(errors="ignore")) if srt_path else []
+        fixes = []
+        if srt_path:
+            text = srt_path.read_text(errors="ignore")
+            fixes = srt.parse(text)
+            if not fixes and (opts.lat is None or opts.lng is None):
+                sample = next((ln.strip() for ln in text.splitlines() if "[" in ln or "GPS" in ln), text[:120])
+                raise ValueError(
+                    "Could not read GPS positions from the .srt file. Its lines look like: "
+                    f"'{sample[:160]}'. Send this line to the developer, or enter the camera position "
+                    "and height under Advanced."
+                )
         if not fixes and (opts.lat is None or opts.lng is None):
-            raise ValueError("No GPS in the .srt file; give the camera position manually")
+            raise ValueError("No .srt file: enter the camera position and height under Advanced")
         if not fixes and opts.altitude_m is None:
-            raise ValueError("Give the flight altitude when there is no .srt file")
+            raise ValueError("Give the flight height under Advanced when there is no .srt file")
 
         cap = cv2.VideoCapture(str(video))
         if not cap.isOpened():
@@ -231,6 +339,7 @@ def run_job(job_id: str, video: Path, srt_path: Path | None, opts: Options, user
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
         step = max(1, int(round(fps * opts.sample_every_s)))
+        stats = {"read": 0, "checked": 0, "no_alt": 0, "best": None}
         points = []
         n_hits = 0
         idx = 0
@@ -242,23 +351,52 @@ def run_job(job_id: str, video: Path, srt_path: Path | None, opts: Options, user
                 ok, frame = cap.retrieve()
                 if not ok:
                     break
-                n_hits += _process_frame(frame, idx / fps, fixes, detector, opts, points)
+                stats["read"] += 1
+                n_hits += _process_frame(frame, idx / fps, fixes, detector, opts, points, stats)
                 if frames:
                     _update_job(job_id, progress=min(0.99, idx / frames), detections=n_hits,
                                 message=f"Frame {idx}/{frames}")
             idx += 1
         cap.release()
 
+        if stats["read"] == 0:
+            raise ValueError(
+                "No frames could be read from the video. DJI H.265 (HEVC) or 10-bit D-Log files sometimes "
+                "can't be decoded; convert it first: ffmpeg -i input.mp4 -c:v libx264 -crf 18 output.mp4"
+            )
+        if stats["checked"] == 0 and stats["no_alt"]:
+            raise ValueError(
+                f"All {stats['no_alt']} sampled frames were skipped: the .srt has no flight height "
+                "(rel_alt / altitude), or it is 0 (drone on the ground). Enter the height above ground "
+                "under Advanced → Altitude."
+            )
+
         clusters = [c for c in cluster(points, opts.merge_radius_m) if c.hits >= opts.min_hits]
         saved = save_markers(clusters, source=video.name, user_id=user_id)
-        _update_job(job_id, status="done", progress=1.0, detections=n_hits, markers=saved,
-                    message=f"{saved} object(s) marked from {n_hits} detection(s)")
+        best = stats["best"]
+        fields = {"frames_checked": stats["checked"], "frames_skipped": stats["no_alt"]}
+        if best:
+            fields.update(best_score=round(best["score"], 3), best_time=round(best["t"], 1),
+                          best_size_px=best["size_px"], best_crop=best["crop"])
+        skipped = f" {stats['no_alt']} frame(s) skipped for lack of height." if stats["no_alt"] else ""
+        if saved:
+            msg = f"{saved} object(s) marked from {n_hits} detection(s) in {stats['checked']} frame(s).{skipped}"
+        elif best:
+            suggest = max(0.3, round(best["score"] - 0.03, 2))
+            msg = (f"No objects found in {stats['checked']} frame(s). Best match {best['score']:.2f} "
+                   f"(threshold {opts.threshold}) at {best['t']:.0f} s, about {best['size_px']} px. "
+                   f"If the picture shows the object, set the match threshold to about {suggest}"
+                   f"{' and Min. frames to 1' if opts.min_hits > 1 else ''}.{skipped}")
+        else:
+            msg = f"No objects found in {stats['checked']} frame(s).{skipped}"
+        _update_job(job_id, status="done", progress=1.0, detections=n_hits, markers=saved, message=msg, **fields)
     except Exception as e:
         log.exception("Detection job %s failed", job_id)
         _update_job(job_id, status="error", message=str(e))
 
 
-def _process_frame(frame, t, fixes, detector, opts: Options, points: list) -> int:
+def _process_frame(frame, t, fixes, detector, opts: Options, points: list, stats: dict | None = None) -> int:
+    stats = stats if stats is not None else {"read": 0, "checked": 0, "no_alt": 0, "best": None}
     if fixes:
         fix = srt.fix_at(fixes, t)
         lat, lng, yaw = fix.lat, fix.lng, fix.yaw
@@ -266,9 +404,12 @@ def _process_frame(frame, t, fixes, detector, opts: Options, points: list) -> in
     else:
         lat, lng, yaw, alt = opts.lat, opts.lng, None, opts.altitude_m
     if not alt or alt <= 0:
+        stats["no_alt"] += 1
         return 0  # on the ground / no altitude: cannot geo-locate
+    stats["checked"] += 1
 
-    h, w = frame.shape[:2]
+    h0, w0 = frame.shape[:2]
+    h, w = h0, w0
     if w > opts.max_width:
         s = opts.max_width / w
         frame = cv2.resize(frame, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
@@ -277,7 +418,12 @@ def _process_frame(frame, t, fixes, detector, opts: Options, points: list) -> in
     expected_px = None
     if opts.object_size_m:
         expected_px = opts.object_size_m / metres_per_pixel(alt, opts.hfov_deg, w)
-    hits = detector.detect(frame, opts.threshold, expected_px, opts.label)
+    before = (detector.best or {}).get("score")
+    hits = detector.detect(frame, opts.threshold, expected_px, opts.label, frame_scale=w / w0)
+    b = detector.best
+    if b and b.get("score") != before and (stats["best"] is None or b["score"] > stats["best"]["score"]):
+        stats["best"] = {"score": b["score"], "t": t, "size_px": b["size_px"],
+                         "crop": _save_crop(frame, b["x"], b["y"], b["w"], b["h"])}
     for hit in hits:
         hlat, hlng = pixel_to_latlng(hit.x, hit.y, w, h, lat, lng, alt, opts.hfov_deg, yaw)
         pad = max(hit.w, hit.h)

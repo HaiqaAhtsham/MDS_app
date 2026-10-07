@@ -532,7 +532,7 @@ def upload_video(
     telemetry: UploadFile | None = File(None),
     sample_every_s: float = Form(1.0),
     hfov_deg: float = Form(73.7),
-    threshold: float = Form(0.72),
+    threshold: float = Form(0.65),
     object_size_m: float | None = Form(None),
     min_hits: int = Form(1),
     altitude_m: float | None = Form(None),
@@ -593,6 +593,33 @@ def _reference_path(name: str) -> Path:
 @app.get("/api/reference/{name}")
 def reference_image(name: str, user=User):
     return FileResponse(_reference_path(name))
+
+
+class CropIn(BaseModel):
+    x: int = Field(ge=0)
+    y: int = Field(ge=0)
+    w: int = Field(ge=6)
+    h: int = Field(ge=6)
+
+
+@app.post("/api/reference/{name}/crop")
+def crop_reference(name: str, body: CropIn, admin=Admin):
+    """Replace a reference picture with a tight crop around the object."""
+    import cv2
+
+    path = _reference_path(name)
+    img = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(400, "Could not read the picture")
+    h, w = img.shape[:2]
+    if body.x + body.w > w or body.y + body.h > h:
+        raise HTTPException(400, "The box is outside the picture")
+    crop = img[body.y:body.y + body.h, body.x:body.x + body.w]
+    out = path.with_suffix(".png")
+    cv2.imwrite(str(out), crop)
+    if out != path:
+        path.unlink()
+    return {"saved": out.name, "width": body.w, "height": body.h}
 
 
 @app.delete("/api/reference/{name}")

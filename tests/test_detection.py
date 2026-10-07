@@ -115,3 +115,56 @@ def test_self_destruct_expiry(client):
         c.execute("UPDATE markers SET created_at = created_at - 13 * 3600, expires_at = expires_at - 13 * 3600")
     assert client.get("/api/markers").json()["markers"] == []  # hidden immediately
     assert main.purge_expired() == 2  # and purged by the cleanup loop
+
+
+def test_reference_crop(client, app_env):
+    from app import config
+
+    config.REFERENCE_DIR.mkdir(parents=True, exist_ok=True)
+    big = np.full((100, 120, 3), 90, np.uint8)
+    big[40:60, 50:70] = _object(20)
+    cv2.imwrite(str(config.REFERENCE_DIR / "shot.jpg"), big)
+    assert client.post("/api/reference/shot.jpg/crop", json={"x": 100, "y": 0, "w": 40, "h": 20}).status_code == 400
+    r = client.post("/api/reference/shot.jpg/crop", json={"x": 50, "y": 40, "w": 20, "h": 20}).json()
+    assert r["saved"] == "shot.png" and not (config.REFERENCE_DIR / "shot.jpg").exists()
+    assert cv2.imread(str(config.REFERENCE_DIR / "shot.png")).shape[:2] == (20, 20)
+
+
+def test_no_detections_reports_best_match_and_reasons(client, app_env):
+    """A reference that isn't in the video: the job explains what it saw."""
+    from app import config
+
+    video, srt_path, obj = _write_inputs(app_env, [(300, 200)])
+    config.REFERENCE_DIR.mkdir(parents=True, exist_ok=True)
+    other = np.zeros((40, 40, 3), np.uint8)
+    cv2.rectangle(other, (5, 5), (35, 35), (255, 255, 255), 3)  # a square, not our round object
+    cv2.imwrite(str(config.REFERENCE_DIR / "square.png"), other)
+    with video.open("rb") as v, srt_path.open("rb") as s:
+        job_id = client.post("/api/detections", files={"video": ("f.mp4", v, "video/mp4"), "telemetry": ("f.srt", s, "text/plain")},
+                             data={"hfov_deg": str(HFOV), "threshold": "0.9"}).json()["job_id"]
+    for _ in range(300):
+        job = client.get(f"/api/jobs/{job_id}").json()
+        if job["status"] in ("done", "error"):
+            break
+        time.sleep(0.2)
+    assert job["status"] == "done" and job["markers"] == 0
+    assert job["frames_checked"] == 3 and "Best match" in job["message"] and job["best_crop"]
+    assert 0 < job["best_score"] < 0.9
+
+
+def test_srt_without_altitude_is_explained(client, app_env):
+    from app import config
+
+    video, srt_path, obj = _write_inputs(app_env, [(300, 200)])
+    srt_path.write_text(srt_path.read_text().replace(f"[rel_alt: {ALT} abs_alt: 500] ", ""))
+    config.REFERENCE_DIR.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(config.REFERENCE_DIR / "object.png"), obj)
+    with video.open("rb") as v, srt_path.open("rb") as s:
+        job_id = client.post("/api/detections", files={"video": ("f.mp4", v, "video/mp4"), "telemetry": ("f.srt", s, "text/plain")},
+                             data={"hfov_deg": str(HFOV)}).json()["job_id"]
+    for _ in range(100):
+        job = client.get(f"/api/jobs/{job_id}").json()
+        if job["status"] in ("done", "error"):
+            break
+        time.sleep(0.2)
+    assert job["status"] == "error" and "flight height" in job["message"]

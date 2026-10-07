@@ -297,3 +297,5 @@ details summary { cursor: pointer; color: var(--muted); margin-bottom: 10px; }
 /* ---------- route history ---------- */
 .page.wide { max-width: 1400px; }
 .routes-table td, .routes-table th { white-space: nowrap; }
+
+.best-crop { width: 64px; height: 64px; object-fit: contain; image-rendering: pixelated; border: 1px solid var(--line); border-radius: 6px; background: #000; }

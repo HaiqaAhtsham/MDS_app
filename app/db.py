@@ -96,6 +96,13 @@ MISSION_COLUMNS = {
     "ammo_ready": "INTEGER",
 }
 
+# Detection diagnostics: the best match found (even below the threshold),
+# and how many frames were checked or skipped.
+JOB_COLUMNS = {
+    "best_score": "REAL", "best_time": "REAL", "best_size_px": "INTEGER", "best_crop": "TEXT",
+    "frames_checked": "INTEGER", "frames_skipped": "INTEGER",
+}
+
 # Canister stock per type (handout p. 9: GBL-240 and GBL-243 are the two types in use).
 CANISTER_TYPES = ("GBL-240", "GBL-243")
 AMMO_KEYS = [f"ammo_{k}_{t[4:]}" for t in CANISTER_TYPES for k in ("total", "loaded", "fired")]
@@ -134,6 +141,10 @@ def init() -> None:
         for col, decl in MISSION_COLUMNS.items():
             if col not in have:
                 c.execute(f"ALTER TABLE mission ADD COLUMN {col} {decl}")
+        have = {r["name"] for r in c.execute("PRAGMA table_info(jobs)")}
+        for col, decl in JOB_COLUMNS.items():
+            if col not in have:
+                c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {decl}")
 
 
 def get_setting(key: str, default: str | None = None) -> str | None:
