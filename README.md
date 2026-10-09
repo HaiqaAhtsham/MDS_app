@@ -55,6 +55,26 @@ MDS_COOKIE_SECURE=1 uvicorn app.main:app --host 0.0.0.0 --port 8443 \
 
 Another way is a reverse proxy with a real certificate (nginx, Caddy).
 
+### External GPS receiver (COM port)
+
+A USB or serial GPS receiver, such as one on `COM5`, is read by the **server**, because browsers cannot open COM ports. "Use this device's GPS" does not see it. Plug the receiver into the computer that runs the server, then use either of these:
+
+- **External GPS (COM)** on the dashboard: enter `COM5`, leave the baud rate on *Detect automatically* and press **Connect**. The dialog shows satellites, HDOP and speed once there is a fix.
+- Start the server with the port set, and it connects automatically:
+
+  ```powershell
+  $env:MDS_GPS_PORT="COM5"; uvicorn app.main:app --port 8000
+  ```
+
+The receiver must send NMEA sentences (GGA/RMC), which almost all receivers do by default. Fixes are recorded once a second. If it is unplugged, the server reconnects when it is plugged back in.
+
+| Message | Fix |
+| --- | --- |
+| *COM5 is in use by another program* | Close u-center, GPS Info, PuTTY or a second MDS server. Windows Location can also hold the port through a GPS sensor driver. |
+| *COM5 was not found on the server* | The receiver is on a different computer, or it uses another number: check Device Manager → Ports (COM & LPT). |
+| *no GPS (NMEA) data arrived* | Wrong port, no power, or the receiver is set to a binary protocol (UBX/SiRF binary). Switch it to NMEA. |
+| *Waiting for a satellite fix* | Connected. Take the antenna outdoors with a clear view of the sky. A cold start can take a few minutes. |
+
 ## Using it
 
 ### Laying mission: start point → parameters → end point → Start
@@ -179,6 +199,8 @@ For `claude` mode, set `ANTHROPIC_API_KEY`. `MDS_CLAUDE_MODEL` defaults to `clau
 | `MDS_OSRM_URL` / `MDS_OSRM_PROFILE` | unset / `driving` | Self-hosted OSRM server for road routing |
 | `MDS_MBTILES` / `MDS_TILE_DIR` | `tiles/map.mbtiles` / `tiles/` | Offline map tiles |
 | `MDS_ONLINE_TILES` | `1` | `0` = never load online imagery |
+| `MDS_GPS_PORT` / `MDS_GPS_BAUD` | unset / detect | External GPS receiver to connect at startup, e.g. `COM5` / `9600` |
+| `MDS_GPS_INTERVAL_S` | `1` | Seconds between recorded external GPS fixes |
 
 ## Layout
 

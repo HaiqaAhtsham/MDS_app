@@ -444,14 +444,88 @@ $("#btn-gps").addEventListener("click", () => {
 
 function updateGpsUi() {
   const on = state.gpsWatch !== null, sim = !!state.sim;
+  const sg = state.serialGps || {}, serialOn = !!sg.running;
   $("#btn-gps").classList.toggle("on", on);
   $("#btn-gps").textContent = on ? "Stop sharing GPS" : "Use this device's GPS";
+  $("#btn-serial-gps").classList.toggle("on", serialOn);
+  $("#btn-serial-gps").textContent = serialOn ? `External GPS: ${sg.port}` : "External GPS (COM)";
   $("#btn-sim").classList.toggle("on", sim);
   $("#btn-sim").textContent = sim ? "Stop simulation" : "Simulate";
   const pill = $("#gps-pill");
-  pill.textContent = on ? "GPS live (this device)" : sim ? "Simulated vehicle" : "GPS off";
-  pill.classList.toggle("live", on || sim);
+  const serialText = { live: `GPS live (${sg.port})`, no_fix: `${sg.port}: no fix yet`, error: `${sg.port}: error`,
+    searching: `${sg.port}: connecting`, connecting: `${sg.port}: connecting` }[sg.state];
+  pill.textContent = on ? "GPS live (this device)" : sim ? "Simulated vehicle" : serialOn ? serialText : "GPS off";
+  pill.classList.toggle("live", on || sim || sg.state === "live");
 }
+
+// External receiver on the server's COM port (read by the server, since
+// browsers cannot open serial ports).
+const serialDlg = $("#serial-dialog");
+
+function renderSerialGps(s) {
+  state.serialGps = s;
+  updateGpsUi();
+  if (!serialDlg.open) return;
+  const running = !!s.running;
+  $("#sg-stop").classList.toggle("hidden", !running);
+  $("#sg-connect").textContent = running ? "Reconnect" : "Connect";
+  const list = $("#sg-ports");
+  list.innerHTML = "";
+  for (const p of s.ports || []) {
+    const o = document.createElement("option");
+    o.value = p.device; o.label = p.description; list.append(o);
+  }
+  $("#sg-found").textContent = !s.available
+    ? "pyserial is not installed on the server: run  pip install pyserial  and restart."
+    : s.ports && s.ports.length
+      ? "Ports on the server: " + s.ports.map((p) => `${p.device} (${p.description || "serial"})`).join(", ")
+      : "The server sees no serial ports. Is the receiver plugged into this computer?";
+  let st = s.state === "stopped" ? "Not connected." : s.message || "";
+  if (s.state === "live" && s.fix) {
+    const f = s.fix;
+    st = `Live from ${s.port} at ${s.baud} baud: ${f.lat.toFixed(6)}, ${f.lng.toFixed(6)}`
+      + (f.sats != null ? ` · ${f.sats} satellites` : "") + (f.hdop != null ? ` · HDOP ${f.hdop}` : "")
+      + (f.speed != null ? ` · ${(f.speed * 3.6).toFixed(1)} km/h` : "");
+  }
+  $("#sg-status").textContent = s.state === "error" ? "" : st;
+  $("#sg-error").textContent = s.state === "error" ? s.error || s.message : "";
+  $("#sg-error").classList.toggle("hidden", s.state !== "error");
+}
+
+async function loadSerialGps() {
+  try { renderSerialGps(await api("/api/gps/serial")); } catch { /* next time */ }
+}
+
+$("#btn-serial-gps").addEventListener("click", async () => {
+  serialDlg.showModal();
+  await loadSerialGps();
+  const s = state.serialGps || {};
+  if (!$("#sg-port").value) $("#sg-port").value = s.port || (s.ports && s.ports.length === 1 ? s.ports[0].device : "");
+  if (s.baud && !$("#sg-baud").value) $("#sg-baud").value = String(s.baud);
+});
+$("#sg-close").addEventListener("click", () => serialDlg.close());
+$("#sg-refresh").addEventListener("click", loadSerialGps);
+$("#sg-stop").addEventListener("click", async () => {
+  renderSerialGps(await api("/api/gps/serial/stop", { method: "POST" }));
+});
+$("#sg-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  let port = $("#sg-port").value.trim();
+  if (/^com\d+$/i.test(port)) port = port.toUpperCase();
+  else if (/^\d+$/.test(port)) port = "COM" + port;
+  if (!port) return toast("Enter the port, e.g. COM5", true);
+  const baud = $("#sg-baud").value ? Number($("#sg-baud").value) : null;
+  if (state.gpsWatch !== null) $("#btn-gps").click();
+  stopSim();
+  $("#sg-connect").disabled = true;
+  try {
+    renderSerialGps(await api("/api/gps/serial/start", { method: "POST", json: { port, baud } }));
+  } catch (err) {
+    await loadSerialGps();
+    $("#sg-error").textContent = err.message;
+    $("#sg-error").classList.remove("hidden");
+  } finally { $("#sg-connect").disabled = false; }
+});
 
 // Simulation: follows the navigation route to the start point (or a straight
 // line from 400 m away), then lays along the strip at the required speed.
@@ -1348,6 +1422,8 @@ $("#chat-open").addEventListener("click", () => { $("#chat").classList.remove("h
   renderSettings(await api("/api/settings"));
   await Promise.all([loadTracking(), loadMarkers()]);
   setInterval(loadTracking, 3000);
+  loadSerialGps();
+  setInterval(loadSerialGps, 3000);
   setInterval(loadMarkers, 10000);
   setInterval(async () => { try { renderSettings(await api("/api/settings")); } catch { /* next time */ } }, 15000);
   updateGpsUi();

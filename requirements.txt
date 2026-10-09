@@ -6,6 +6,7 @@ numpy>=1.26
 pypdf>=4.0
 cffi>=1.16
 httpx>=0.27  # talks to the OSRM routing server
+pyserial>=3.5  # external GPS receiver on a COM port
 anthropic>=1.0  # only used when MDS_RAG_MODE=claude
 # Optional: a trained YOLO detector (models/detector.pt)
 # ultralytics>=8.2

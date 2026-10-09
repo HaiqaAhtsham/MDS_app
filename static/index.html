@@ -78,6 +78,7 @@
             <button class="btn" id="btn-set-end">End point</button>
             <button class="btn primary" id="btn-start">Start</button>
             <button class="btn" id="btn-gps">Use this device's GPS</button>
+            <button class="btn" id="btn-serial-gps" title="GPS receiver plugged into the server's COM / USB port">External GPS (COM)</button>
             <button class="btn" id="btn-sim" title="Drive a simulated vehicle along the route">Simulate</button>
             <button class="btn" id="btn-mark" title="Click the map to add a marker by hand">Add marker</button>
             <button class="btn danger" id="btn-reset">Reset</button>
@@ -307,6 +308,32 @@
       <span class="spacer"></span>
       <button type="button" class="btn" id="pm-cancel">Cancel</button>
       <button class="btn primary">Save parameters</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="serial-dialog" class="dlg">
+  <form id="sg-form" method="dialog">
+    <h3>External GPS receiver</h3>
+    <p class="small muted">The receiver must be plugged into the computer that runs the MDS server. Close any other program using the port (u-center, GPS Info, PuTTY) first.</p>
+    <div class="row">
+      <div class="field"><label>Port</label><input id="sg-port" list="sg-ports" placeholder="COM5" autocomplete="off"><datalist id="sg-ports"></datalist></div>
+      <div class="field"><label>Baud rate</label>
+        <select id="sg-baud">
+          <option value="">Detect automatically</option>
+          <option>4800</option><option>9600</option><option>19200</option><option>38400</option><option>57600</option><option>115200</option>
+        </select>
+      </div>
+    </div>
+    <p class="small" id="sg-found"></p>
+    <p class="small" id="sg-status"></p>
+    <p id="sg-error" class="warn small hidden"></p>
+    <div class="dlg-actions">
+      <button type="button" class="btn" id="sg-refresh">Refresh ports</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn" id="sg-close">Close</button>
+      <button type="button" class="btn danger hidden" id="sg-stop">Disconnect</button>
+      <button class="btn primary" id="sg-connect">Connect</button>
     </div>
   </form>
 </dialog>

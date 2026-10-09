@@ -43,6 +43,13 @@ TILE_DIR = Path(os.environ.get("MDS_TILE_DIR", ROOT / "tiles"))
 ONLINE_TILES = os.environ.get("MDS_ONLINE_TILES", "1") == "1"
 ONLINE_TILE_URL = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
 
+# External GPS receiver on a serial port, e.g. COM5 (Windows) or
+# /dev/ttyUSB0 (Linux). When set, the server connects to it at startup.
+# MDS_GPS_BAUD: 4800, 9600, ... or empty to detect it.
+GPS_PORT = os.environ.get("MDS_GPS_PORT", "")
+GPS_BAUD = int(os.environ["MDS_GPS_BAUD"]) if os.environ.get("MDS_GPS_BAUD") else None
+GPS_INTERVAL_S = float(os.environ.get("MDS_GPS_INTERVAL_S", "1"))
+
 # Tracking thresholds, in metres.
 ARRIVAL_RADIUS_M = float(os.environ.get("MDS_ARRIVAL_RADIUS_M", "25"))
 OFF_ROUTE_M = float(os.environ.get("MDS_OFF_ROUTE_M", "50"))

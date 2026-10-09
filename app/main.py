@@ -18,7 +18,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from . import ammo, auth, config, db, density, detection, rag, routing, tracking
+from . import ammo, auth, config, db, density, detection, rag, routing, serial_gps, tracking
 from .geo import bearing, haversine
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -46,8 +46,14 @@ async def lifespan(app: FastAPI):
         c.execute("UPDATE jobs SET status = 'error', message = 'Interrupted by restart' WHERE status IN ('queued', 'running')")
     threading.Thread(target=rag.build_index, daemon=True).start()
     threading.Thread(target=_purge_expired_loop, daemon=True).start()
+    if config.GPS_PORT:
+        try:
+            serial_gps.start(config.GPS_PORT, config.GPS_BAUD)
+        except Exception as err:
+            log.warning("serial GPS %s: %s", config.GPS_PORT, err)
     yield
     _stop.set()
+    serial_gps.stop()
 
 
 app = FastAPI(title="MDS Dashboard", lifespan=lifespan)
@@ -204,6 +210,29 @@ class PositionIn(BaseModel):
     accuracy: float | None = None
     heading: float | None = None
     speed: float | None = None
+
+
+class SerialGpsIn(BaseModel):
+    port: str = Field(min_length=1, max_length=64)
+    baud: int | None = Field(default=None, ge=1200, le=921600)
+
+
+@app.get("/api/gps/serial")
+def serial_gps_status(user=User):
+    return serial_gps.status()
+
+
+@app.post("/api/gps/serial/start")
+def serial_gps_start(body: SerialGpsIn, user=User):
+    try:
+        return serial_gps.start(body.port, body.baud, user["id"])
+    except (RuntimeError, ValueError) as err:
+        raise HTTPException(400, str(err))
+
+
+@app.post("/api/gps/serial/stop")
+def serial_gps_stop(user=User):
+    return serial_gps.stop()
 
 
 @app.get("/api/tracking")
