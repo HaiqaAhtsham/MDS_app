@@ -95,16 +95,64 @@ const map = L.map("map", { zoomControl: false, attributionControl: true }).setVi
 L.control.zoom({ position: "topright" }).addTo(map);
 $(".leaflet-top.leaflet-right").style.marginTop = "56px";
 
+L.control.scale({ position: "bottomleft", metric: true, imperial: false, maxWidth: 160 }).addTo(map);
+
+let baseLayer = null;
+
 function setTiles(cfg) {
   if (!cfg.tile_url) {
     toast("No map tiles are installed. Put an .mbtiles file in tiles/ (see README).", true);
     return;
   }
-  L.tileLayer(cfg.tile_url, {
-    maxZoom: Math.max(20, cfg.tile_max_zoom),
+  baseLayer = L.tileLayer(cfg.tile_url, {
+    maxZoom: Math.max(21, cfg.tile_max_zoom),
     maxNativeZoom: cfg.tile_max_zoom,
-    attribution: cfg.tiles === "online" ? "Imagery © Esri" : "Offline tiles",
+    attribution: cfg.tiles === "online" ? "Imagery © Esri, Maxar, Earthstar Geographics" : "Offline tiles",
   }).addTo(map);
+  if (cfg.tiles !== "online") return;
+  // Esri's imagery is deeper in some places than others. Past the deepest
+  // level a spot has, tiles come back blank ("Map data not yet available")
+  // or fail. Stop at the deepest real level and enlarge it instead.
+  baseLayer.on("tileerror", (e) => {
+    const z = e.coords.z;
+    if (z > 13 && z <= baseLayer.options.maxNativeZoom) setImageryDepth(z - 1);
+  });
+  map.on("moveend", () => { clearTimeout(depthTimer); depthTimer = setTimeout(fitImageryDepth, 250); });
+  fitImageryDepth();
+}
+
+let depthTimer = null;
+const depthCache = new Map();
+
+function setImageryDepth(z) {
+  if (!baseLayer || baseLayer.options.maxNativeZoom === z) return;
+  baseLayer.options.maxNativeZoom = z;
+  baseLayer.redraw();
+}
+
+async function hasImagery(z, x, y) {
+  const key = `${z}/${y}/${x}`;
+  if (!depthCache.has(key)) {
+    depthCache.set(key, fetch(`${state.config.tilemap_url}/${key}/1/1`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => (j && Array.isArray(j.data) ? j.data[0] === 1 : null))
+      .catch(() => null));
+  }
+  return depthCache.get(key);
+}
+
+async function fitImageryDepth() {
+  const cfg = state.config;
+  if (!baseLayer || !cfg?.tilemap_url) return;
+  const top = cfg.tile_max_zoom, z = Math.min(Math.round(map.getZoom()), top);
+  if (z <= 15) return setImageryDepth(top);
+  const c = map.getCenter();
+  for (let zz = z; zz >= 13; zz--) {
+    const p = map.project(c, zz).divideBy(256).floor();
+    const ok = await hasImagery(zz, p.x, p.y);
+    if (ok === null) return; // tilemap unreachable: rely on tileerror
+    if (ok) return setImageryDepth(zz === z ? top : zz);
+  }
 }
 
 const layers = {
@@ -762,6 +810,7 @@ function updateNav(t) {
         ["Total remaining", fmtM(remaining + (t.strip_length_m || 0))],
       ];
       steps = r.steps.map((s, i) => ({ text: s.text, dist: s.distance_m, done: i < next, now: i === next }));
+      if (r.source === "osrm") stats.push(["Route via", r.mode === "tracks" ? "Roads and tracks" : "Roads"]);
       if (r.warning) stats.push(["Routing", `<span class="warn small">${esc(r.warning)}</span>`]);
     } else {
       current = '<div class="nav-instr">Calculating route…</div>';
@@ -1005,6 +1054,7 @@ function renderSettings(s) {
   sel.value = val;
   sel.dataset.current = val;
   if (document.activeElement?.name !== "pct") $("#tol-form [name=pct]").value = s.speed_tol_pct;
+  $("#route-mode").value = s.route_mode || "roads";
 }
 
 async function setSd(hours) {
@@ -1354,6 +1404,16 @@ $("#doc-form").addEventListener("submit", async (e) => {
 });
 
 // ------------------------------------------------------------ settings page
+
+$("#route-mode").addEventListener("change", async (e) => {
+  try {
+    renderSettings(await api("/api/settings/route-mode", { method: "PUT", json: { mode: e.target.value } }));
+    nav.route = null; // route again with the new mode
+    nav.routeTo = null;
+    if (state.tracking) renderTracking(state.tracking);
+    toast(e.target.value === "tracks" ? "Routes now follow roads and tracks" : "Routes now follow roads only");
+  } catch (err) { toast(err.message, true); }
+});
 
 $("#tol-form").addEventListener("submit", async (e) => {
   e.preventDefault();

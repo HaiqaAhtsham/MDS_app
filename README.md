@@ -39,7 +39,9 @@ docker run -d -p 5000:5000 -v "$PWD:/data" ghcr.io/project-osrm/osrm-backend osr
 MDS_OSRM_URL=http://localhost:5000 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-Without `MDS_OSRM_URL`, or if the server is down, navigation shows a straight line with a compass heading and a clear "no road routing" warning.
+Without `MDS_OSRM_URL`, or if that server is down, the app uses the public OpenStreetMap routing servers (`routing.openstreetmap.de`), which needs internet. With no server reachable at all, or with `MDS_ONLINE_ROUTING=0` and no local server, navigation shows a straight line with a compass heading and a clear "no road routing" warning.
+
+**Roads or tracks.** Settings → *Route via* chooses **Roads only** or **Roads and tracks**. Roads only uses the car profile, which skips unpaved tracks. Roads and tracks also follows the tracks and paths mapped in OpenStreetMap. Its travel time is worked out at `MDS_TRACK_SPEED_KMH` (25 km/h). A route can only follow what is mapped: an unmapped track looks the same as an open field. To route on tracks offline, build a second OSRM with `-p /opt/bicycle.lua` (or your own vehicle profile) and set `MDS_OSRM_TRACKS_URL`.
 
 OSRM snaps the start point to the nearest road. When the start point is in a field, the directions end with *"Leave the road: head east (90°) for 120 m"*.
 
@@ -197,8 +199,11 @@ For `claude` mode, set `ANTHROPIC_API_KEY`. `MDS_CLAUDE_MODEL` defaults to `clau
 | `MDS_COOKIE_SECURE` | `0` | Set to `1` when serving over HTTPS |
 | `MDS_ARRIVAL_RADIUS_M` / `MDS_OFF_ROUTE_M` | `25` / `50` | Arrival radius; off-route distance that triggers rerouting |
 | `MDS_OSRM_URL` / `MDS_OSRM_PROFILE` | unset / `driving` | Self-hosted OSRM server for road routing |
+| `MDS_OSRM_TRACKS_URL` | unset | Self-hosted OSRM that also follows tracks |
+| `MDS_ONLINE_ROUTING` | `1` | `0` = never use the public OpenStreetMap routing servers |
+| `MDS_TRACK_SPEED_KMH` | `25` | Speed used for travel time on roads-and-tracks routes |
 | `MDS_MBTILES` / `MDS_TILE_DIR` | `tiles/map.mbtiles` / `tiles/` | Offline map tiles |
-| `MDS_ONLINE_TILES` | `1` | `0` = never load online imagery |
+| `MDS_ONLINE_TILES` | `1` | `0` = never load online imagery. Online imagery is Esri World Imagery (Maxar, Earthstar Geographics). The map finds the deepest zoom Esri has at each place and enlarges it beyond that, so zooming in never shows blank tiles. |
 | `MDS_GPS_PORT` / `MDS_GPS_BAUD` | unset / detect | External GPS receiver to connect at startup, e.g. `COM5` / `9600` |
 | `MDS_GPS_INTERVAL_S` | `1` | Seconds between recorded external GPS fixes |
 

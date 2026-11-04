@@ -35,6 +35,20 @@ CLAUDE_MODEL = os.environ.get("MDS_CLAUDE_MODEL", "claude-opus-5-5")
 # Road routing: a self-hosted OSRM server, e.g. http://localhost:5000.
 OSRM_URL = os.environ.get("MDS_OSRM_URL", "")
 OSRM_PROFILE = os.environ.get("MDS_OSRM_PROFILE", "driving")
+# Optional second self-hosted OSRM built with a profile that allows tracks
+# (unpaved highway=track / path), for "Roads and tracks" routing.
+OSRM_TRACKS_URL = os.environ.get("MDS_OSRM_TRACKS_URL", "")
+# Without a self-hosted server (or when it is down), use the public OSRM
+# servers run for OpenStreetMap. They need internet; 0 turns them off.
+ONLINE_ROUTING = os.environ.get("MDS_ONLINE_ROUTING", "1") == "1"
+PUBLIC_OSRM = {
+    "roads": "https://routing.openstreetmap.de/routed-car",
+    # The car profile skips unpaved tracks; the bike profile follows them.
+    "tracks": "https://routing.openstreetmap.de/routed-bike",
+}
+# Travel time on a roads-and-tracks route is distance / this speed (the
+# bike profile's own times are for a bicycle).
+TRACK_SPEED_KMH = float(os.environ.get("MDS_TRACK_SPEED_KMH", "25"))
 
 # Offline map tiles: an .mbtiles file, or a folder of {z}/{x}/{y}.png|jpg.
 # When neither exists, the browser loads online imagery (if MDS_ONLINE_TILES=1).
@@ -42,6 +56,10 @@ MBTILES = Path(os.environ.get("MDS_MBTILES", ROOT / "tiles" / "map.mbtiles"))
 TILE_DIR = Path(os.environ.get("MDS_TILE_DIR", ROOT / "tiles"))
 ONLINE_TILES = os.environ.get("MDS_ONLINE_TILES", "1") == "1"
 ONLINE_TILE_URL = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+# Says, per tile, whether Esri has imagery there, so the map can stop at the
+# deepest zoom that exists instead of showing "Map data not yet available".
+ONLINE_TILEMAP_URL = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tilemap"
+ONLINE_TILE_MAX_ZOOM = 19
 
 # External GPS receiver on a serial port, e.g. COM5 (Windows) or
 # /dev/ttyUSB0 (Linux). When set, the server connects to it at startup.

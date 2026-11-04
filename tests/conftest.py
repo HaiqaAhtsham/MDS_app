@@ -30,6 +30,7 @@ def app_env(tmp_path, monkeypatch, rag_cache):
     monkeypatch.setenv("MDS_REFERENCE_DIR", str(tmp_path / "reference"))
     monkeypatch.setenv("MDS_ADMIN_PASSWORD", "admin-pass-123")
     monkeypatch.setenv("MDS_RAG_MODE", "local")
+    monkeypatch.setenv("MDS_ONLINE_ROUTING", "0")  # tests never call public servers
     from app import config
 
     importlib.reload(config)

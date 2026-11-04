@@ -247,6 +247,13 @@
         <div class="page">
           <h2>Settings</h2>
           <div class="grid-2">
+          <div class="card card-b">
+            <div class="label" style="margin-bottom:8px">Navigation route</div>
+            <p class="small muted">"Roads and tracks" also follows unpaved tracks mapped in OpenStreetMap. Off the mapped network the last part is cross-country.</p>
+            <div class="field"><label>Route via</label>
+              <select id="route-mode"><option value="roads">Roads only</option><option value="tracks">Roads and tracks</option></select>
+            </div>
+          </div>
           <form class="card card-b admin-only hidden" id="tol-form">
             <div class="label" style="margin-bottom:8px">Laying speed tolerance</div>
             <p class="small muted">Warn the driver when the speed differs from the chart speed by more than this.</p>

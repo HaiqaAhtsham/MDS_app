@@ -1,3 +1,4 @@
+import pytest
 import sqlite3
 
 import httpx
@@ -55,6 +56,7 @@ def test_fallback_without_osrm(client, monkeypatch):
     r = client.get("/api/route", params={"from_lat": ORIGIN[0], "from_lng": ORIGIN[1],
                                          "to_lat": DEST[0], "to_lng": DEST[1]}).json()
     assert r["source"] == "straight-line" and "MDS_OSRM_URL" in r["warning"]
+    assert client.get("/api/config").json()["road_routing"] is False
     assert abs(r["distance_m"] - haversine(*ORIGIN, *DEST)) < 0.01
 
 
@@ -62,7 +64,7 @@ def test_osrm_called_and_unreachable_falls_back(client, monkeypatch):
     monkeypatch.setattr(config, "OSRM_URL", "http://osrm.local:5000")
     calls = []
 
-    def fake_get(url, params, timeout):
+    def fake_get(url, params, timeout, headers=None):
         calls.append(url)
         return httpx.Response(200, json=OSRM)
 
@@ -72,12 +74,39 @@ def test_osrm_called_and_unreachable_falls_back(client, monkeypatch):
     assert r["source"] == "osrm"
     assert calls[0] == "http://osrm.local:5000/route/v1/driving/73.0,33.6;73.02,33.61"
 
-    def down(url, params, timeout):
+    def down(url, params, timeout, headers=None):
         raise httpx.ConnectError("refused")
 
     monkeypatch.setattr(routing.httpx, "get", down)
     r = client.get("/api/route", params=q).json()
     assert r["source"] == "straight-line" and "unreachable" in r["warning"]
+
+
+def test_public_servers_and_tracks_mode(client, monkeypatch):
+    monkeypatch.setattr(config, "OSRM_URL", "http://osrm.local:5000")
+    monkeypatch.setattr(config, "ONLINE_ROUTING", True)
+    calls = []
+
+    def fake_get(url, params, timeout, headers=None):
+        calls.append(url)
+        if url.startswith("http://osrm.local"):
+            raise httpx.ConnectError("refused")  # local server down
+        assert "MDS" in headers["User-Agent"]
+        return httpx.Response(200, json=OSRM)
+
+    monkeypatch.setattr(routing.httpx, "get", fake_get)
+    q = {"from_lat": ORIGIN[0], "from_lng": ORIGIN[1], "to_lat": DEST[0], "to_lng": DEST[1]}
+    r = client.get("/api/route", params=q).json()
+    assert r["source"] == "osrm" and r["mode"] == "roads" and r["server"] == "online"
+    assert calls == ["http://osrm.local:5000/route/v1/driving/73.0,33.6;73.02,33.61",
+                     config.PUBLIC_OSRM["roads"] + "/route/v1/driving/73.0,33.6;73.02,33.61"]
+
+    assert client.put("/api/settings/route-mode", json={"mode": "tracks"}).json()["route_mode"] == "tracks"
+    calls.clear()
+    r = client.get("/api/route", params=q).json()
+    assert calls[0].startswith(config.PUBLIC_OSRM["tracks"]) and r["mode"] == "tracks"
+    assert r["duration_s"] == pytest.approx(r["distance_m"] / (config.TRACK_SPEED_KMH / 3.6))
+    assert client.put("/api/settings/route-mode", json={"mode": "fly"}).status_code == 422
 
 
 def test_mbtiles_served_offline(client, monkeypatch, tmp_path):

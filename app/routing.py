@@ -1,4 +1,5 @@
-"""Road routing through a self-hosted OSRM server.
+"""Road routing through OSRM: a self-hosted server, or the public
+OpenStreetMap servers when there is none.
 
 The approach leg (vehicle -> start point) follows roads. OSRM snaps both
 ends to the nearest road, so when the start point is off-road (as a strip
@@ -6,8 +7,9 @@ usually is) a final cross-country segment is added from the road to the
 point. The laying leg (start -> end) is the straight strip centreline and
 is handled by the client.
 
-If MDS_OSRM_URL is unset or the server can't be reached, a straight-line
-route is returned and flagged, so the UI can say there is no road routing.
+Two modes: "roads" (car profile, paved roads) and "tracks" (a profile that
+also follows unpaved tracks). If no server answers, a straight-line route
+is returned and flagged, so the UI can say there is no road routing.
 """
 
 import math
@@ -16,6 +18,9 @@ import httpx
 
 from . import config
 from .geo import bearing, haversine
+
+MODES = ("roads", "tracks")
+USER_AGENT = "MDS-Dashboard/1.0 (minefield laying navigation)"
 
 # Gap between the requested point and the road OSRM snapped it to, above
 # which an explicit cross-country step is added.
@@ -142,18 +147,56 @@ def parse_osrm(data: dict, origin, dest) -> dict:
     }
 
 
-def route(origin: tuple[float, float], dest: tuple[float, float]) -> dict:
-    if not config.OSRM_URL:
-        return straight_route(origin, dest, "MDS_OSRM_URL is not set")
-    url = (
-        f"{config.OSRM_URL.rstrip('/')}/route/v1/{config.OSRM_PROFILE}/"
-        f"{origin[1]},{origin[0]};{dest[1]},{dest[0]}"
-    )
-    try:
-        r = httpx.get(url, params={"steps": "true", "geometries": "geojson", "overview": "full"}, timeout=10)
-        data = r.json()
-        if r.status_code != 200 or data.get("code") != "Ok" or not data.get("routes"):
-            return straight_route(origin, dest, f"OSRM: {data.get('message') or data.get('code') or r.status_code}")
-        return parse_osrm(data, origin, dest)
-    except (httpx.HTTPError, ValueError, KeyError, IndexError) as e:
-        return straight_route(origin, dest, f"routing server unreachable: {type(e).__name__}")
+def servers(mode: str) -> list[tuple[str, str, str]]:
+    """(base url, profile, label) to try in order for a mode."""
+    out = []
+    if mode == "tracks":
+        if config.OSRM_TRACKS_URL:
+            out.append((config.OSRM_TRACKS_URL, config.OSRM_PROFILE, "local"))
+        if config.ONLINE_ROUTING:
+            out.append((config.PUBLIC_OSRM["tracks"], "driving", "online"))
+    if config.OSRM_URL:
+        out.append((config.OSRM_URL, config.OSRM_PROFILE, "local"))
+    if config.ONLINE_ROUTING:
+        out.append((config.PUBLIC_OSRM["roads"], "driving", "online"))
+    return out
+
+
+def _ask(base: str, profile: str, origin, dest) -> dict:
+    url = f"{base.rstrip('/')}/route/v1/{profile}/{origin[1]},{origin[0]};{dest[1]},{dest[0]}"
+    r = httpx.get(url, params={"steps": "true", "geometries": "geojson", "overview": "full"},
+                  headers={"User-Agent": USER_AGENT}, timeout=10)
+    data = r.json()
+    if r.status_code != 200 or data.get("code") != "Ok" or not data.get("routes"):
+        raise LookupError(data.get("message") or data.get("code") or str(r.status_code))
+    return data
+
+
+def route(origin: tuple[float, float], dest: tuple[float, float], mode: str = "roads") -> dict:
+    mode = mode if mode in MODES else "roads"
+    tried = servers(mode)
+    if not tried:
+        return straight_route(origin, dest, "no routing server: set MDS_OSRM_URL or allow online routing")
+    track_servers = {u for u in (config.OSRM_TRACKS_URL, config.PUBLIC_OSRM["tracks"]) if u}
+    problems = []
+    for base, profile, label in tried:
+        try:
+            out = parse_osrm(_ask(base, profile, origin, dest), origin, dest)
+        except LookupError as e:
+            problems.append(f"{label} server: {e}")
+            continue
+        except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as e:
+            problems.append(f"{label} routing server unreachable ({type(e).__name__})")
+            continue
+        via_tracks = mode == "tracks" and base in track_servers
+        out["mode"] = "tracks" if via_tracks else "roads"
+        out["server"] = label
+        if via_tracks:  # the tracks profile's own times are not for a vehicle
+            speed = config.TRACK_SPEED_KMH / 3.6
+            out["duration_s"] = out["distance_m"] / speed
+            for st in out["steps"]:
+                st["duration_s"] = st["distance_m"] / speed if st["distance_m"] else 0
+        elif mode == "tracks":
+            out["warning"] = "Tracks routing is unavailable; showing a roads-only route."
+        return out
+    return straight_route(origin, dest, "; ".join(problems))

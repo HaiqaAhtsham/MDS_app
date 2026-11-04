@@ -349,7 +349,7 @@ def density_calc(body: ParamsIn, user=User):
 def get_route(from_lat: float, from_lng: float, to_lat: float, to_lng: float, user=User):
     _check((from_lat, from_lng))
     _check((to_lat, to_lng))
-    return routing.route((from_lat, from_lng), (to_lat, to_lng))
+    return routing.route((from_lat, from_lng), (to_lat, to_lng), db.get_setting("route_mode", "roads"))
 
 
 def _tile_source() -> str | None:
@@ -363,7 +363,7 @@ def _tile_source() -> str | None:
 @app.get("/api/config")
 def client_config(user=User):
     local = _tile_source()
-    max_zoom = 19
+    max_zoom = config.ONLINE_TILE_MAX_ZOOM
     if local == "mbtiles":
         conn = sqlite3.connect(f"file:{config.MBTILES}?mode=ro", uri=True)
         try:
@@ -379,7 +379,8 @@ def client_config(user=User):
         "tile_max_zoom": max_zoom,
         "tile_url": "/tiles/{z}/{x}/{y}" if local else (config.ONLINE_TILE_URL if config.ONLINE_TILES else None),
         "tiles": local or ("online" if config.ONLINE_TILES else "none"),
-        "road_routing": bool(config.OSRM_URL),
+        "tilemap_url": None if local else config.ONLINE_TILEMAP_URL,
+        "road_routing": bool(config.OSRM_URL or config.ONLINE_ROUTING),
         "off_route_m": config.OFF_ROUTE_M,
         "arrival_radius_m": config.ARRIVAL_RADIUS_M,
     }
@@ -491,6 +492,7 @@ def _settings():
         "sd_max": config.SD_MAX_HOURS,
         "rag_mode": config.RAG_MODE,
         "speed_tol_pct": float(db.get_setting("speed_tol_pct", "10")),
+        "route_mode": db.get_setting("route_mode", "roads"),
     }
 
 
@@ -517,6 +519,16 @@ class ToleranceIn(BaseModel):
 @app.put("/api/settings/speed-tolerance")
 def set_speed_tolerance(body: ToleranceIn, admin=Admin):
     db.set_setting("speed_tol_pct", body.pct)
+    return _settings()
+
+
+class RouteModeIn(BaseModel):
+    mode: Literal["roads", "tracks"]
+
+
+@app.put("/api/settings/route-mode")
+def set_route_mode(body: RouteModeIn, user=User):
+    db.set_setting("route_mode", body.mode)
     return _settings()
 
 
